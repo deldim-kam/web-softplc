@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SoftPLCProject",
+  "description": "Схема проекта веб-среды разработки SoftPLC",
+  "type": "object",
+  "required": ["projectName", "version", "target", "datablocks", "programs"],
+  "properties": {
+    "projectName": {
+      "type": "string",
+      "minLength": 1
+    },
+    "version": {
+      "type": "string"
+    },
+    "target": {
+      "type": "object",
+      "required": ["arch", "cycleTimeMs"],
+      "properties": {
+        "arch": {
+          "type": "string",
+          "enum": ["x86_64", "arm64", "armv7l"]
+        },
+        "cycleTimeMs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      }
+    },
+    "datablocks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "type", "variables"],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string",
+            "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"
+          },
+          "type": {
+            "type": "string",
+            "enum": ["global", "instance"]
+          },
+          "variables": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["name", "type", "initValue", "retain"],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": ["BOOL", "INT", "DINT", "REAL", "TIME", "WORD"]
+                },
+                "initValue": {
+                  "type": "string"
+                },
+                "retain": {
+                  "type": "boolean"
+                },
+                "comment": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "programs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "language", "code"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*$"
+          },
+          "language": {
+            "type": "string",
+            "enum": ["ST", "FBD"]
+          },
+          "code": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
