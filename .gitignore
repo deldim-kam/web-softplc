@@ -17,4 +17,11 @@ dist/
 .DS_Store
 Thumbs.db
 .vscode/
-*.swp
+*.swp# Runtime and build artifacts
+*.pid
+core/softplc
+core/logic.so
+backend/bin/
+backend/client.go
+frontend/dist/
+frontend/node_modules/
