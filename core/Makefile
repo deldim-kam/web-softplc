@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -O2 -Wall -Wextra -pthread -Iinclude
-LDFLAGS = -ldl
+LDFLAGS = -ldl -lrt
 
 all: softplc
 

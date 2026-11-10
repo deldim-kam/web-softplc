@@ -56,11 +56,18 @@ int main(int argc, char *argv[]) {
         printf("[RT] Стандартный планировщик (без root прав)\n");
     }
 
+    // Сохраняем PID ядра в файл для Go-сервера
+    FILE *pid_file = fopen("softplc.pid", "w");
+    if (pid_file) {
+        fprintf(pid_file, "%d\n", getpid());
+        fclose(pid_file);
+    }
+
     db_registry_init();
     db_register(1, 16); // DB1 из sample_project.json (16 байт)
 
     if (!logic_load_module(logic_path)) {
-        fprintf(stderr, "[PLC] Не удалось загрузить начальный модуль: %s\n", logic_path);
+        fprintf(stderr, "[PLC] Не удалось загрузить модуль: %s\n", logic_path);
         return 1;
     }
 
@@ -78,7 +85,7 @@ int main(int argc, char *argv[]) {
 
         if (g_reload_requested) {
             g_reload_requested = 0;
-            printf("\n[PLC] Получен сигнал SIGUSR1: Hot Reload...\n");
+            printf("\n[PLC] Получен сигнал SIGUSR1: Hot Reload на лету...\n");
             logic_load_module(logic_path);
         }
 
@@ -96,6 +103,7 @@ int main(int argc, char *argv[]) {
     }
 
     printf("\n[PLC] Остановка ядра...\n");
+    unlink("softplc.pid");
     logic_unload();
     db_registry_cleanup();
     return 0;
