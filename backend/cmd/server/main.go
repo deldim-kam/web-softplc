@@ -1,162 +1,275 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
-	"path/filepath"
+	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
-	"web-softplc/backend/pkg/builder"
-	"web-softplc/backend/pkg/codegen"
-	"web-softplc/backend/pkg/model"
-	"web-softplc/backend/pkg/shm"
 )
 
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-type BuildResponse struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
-	Error   string `json:"error,omitempty"`
+var (
+	clients   = make(map[*websocket.Conn]bool)
+	clientsMu sync.Mutex
+)
+
+func enableCORS(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		next(w, r)
+	}
 }
 
-func sendHotReloadSignal(coreDir string) error {
-	pidPath := filepath.Join(coreDir, "softplc.pid")
-	data, err := os.ReadFile(pidPath)
+func getCorePID() (int, error) {
+	data, err := os.ReadFile("../core/softplc.pid")
 	if err != nil {
-		return fmt.Errorf("ядро не запущено (нет softplc.pid): %w", err)
+		return 0, fmt.Errorf("softplc.pid не найден: %w", err)
 	}
-
 	pidStr := strings.TrimSpace(string(data))
-	pid, err := strconv.Atoi(pidStr)
-	if err != nil {
-		return fmt.Errorf("некорректный PID ядра: %w", err)
-	}
-
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return fmt.Errorf("процесс ядра %d не найден: %w", pid, err)
-	}
-
-	if err := proc.Signal(syscall.SIGUSR1); err != nil {
-		return fmt.Errorf("ошибка отправки сигнала SIGUSR1: %w", err)
-	}
-
-	return nil
+	return strconv.Atoi(pidStr)
 }
 
 func handleBuild(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
-	if r.Method == http.MethodOptions {
-		return
-	}
-
 	if r.Method != http.MethodPost {
-		http.Error(w, "Метод не поддерживается", http.StatusMethodNotAllowed)
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-
-	var proj model.Project
-	if err := json.NewDecoder(r.Body).Decode(&proj); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(BuildResponse{Success: false, Error: "Некорректный JSON проекта: " + err.Error()})
-		return
-	}
-
-	log.Printf("[Server] Получен проект '%s' на сборку", proj.ProjectName)
-
-	headerCode, err := codegen.GenerateHeader(proj.DataBlocks)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(BuildResponse{Success: false, Error: "Ошибка генерации заголовков: " + err.Error()})
-		return
-	}
-
-	logicCode, err := codegen.GenerateLogicSource(&proj)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(BuildResponse{Success: false, Error: "Ошибка трансляции ST: " + err.Error()})
-		return
-	}
-
-	coreDir, _ := filepath.Abs("../core")
-	includeDir := filepath.Join(coreDir, "include")
-
-	soPath, err := builder.CompileSharedLib(headerCode, logicCode, builder.BuildConfig{
-		IncludeDir: includeDir,
-		OutputDir:  coreDir,
-	})
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(BuildResponse{Success: false, Error: "Ошибка GCC: " + err.Error()})
-		return
-	}
-
-	log.Printf("[Server] Модуль успешно скомпилирован: %s", soPath)
-
-	reloadMsg := "Логика скомпилирована. Сигнал Hot Reload успешно отправлен ядру."
-	if err := sendHotReloadSignal(coreDir); err != nil {
-		reloadMsg = fmt.Sprintf("Логика скомпилирована, но ядро сейчас не запущено: %v", err)
-		log.Printf("[Server] %s", reloadMsg)
-	} else {
-		log.Printf("[Server] Сигнал SIGUSR1 отправлен ядру (Hot Reload выполнен)")
-	}
-
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(BuildResponse{
-		Success: true,
-		Message: reloadMsg,
+
+	var projectData any
+	if err := json.NewDecoder(r.Body).Decode(&projectData); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "Неверный JSON"})
+		return
+	}
+
+	tempProjectFile := "../core/temp_project.json"
+	fileBytes, _ := json.MarshalIndent(projectData, "", "  ")
+	_ = os.WriteFile(tempProjectFile, fileBytes, 0644)
+
+	cmd := exec.Command("./bin/softplc-compiler",
+		"-project="+tempProjectFile,
+		"-include=../core/include",
+		"-out=../core",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"error":   fmt.Sprintf("Ошибка компиляции: %s", string(output)),
+		})
+		return
+	}
+
+	pid, err := getCorePID()
+	if err == nil {
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Signal(syscall.SIGUSR1)
+			log.Printf("[HOT RELOAD] SIGUSR1 отправлен процессу PID %d", pid)
+		}
+	}
+
+	json.NewEncoder(w).Encode(map[string]any{
+		"success": true,
+		"message": "Логика скомпилирована. Сигнал Hot Reload отправлен ядру.",
 	})
 }
 
-func handleWebSocket(w http.ResponseWriter, r *http.Request) {
+// Запрос на форсирование значения переменной
+type ForceRequest struct {
+	DbID     int    `json:"dbId"`
+	VarName  string `json:"varName"`
+	VarType  string `json:"varType"`
+	ValueStr string `json:"value"`
+}
+
+// Прямая запись байтов в /dev/shm
+func handleForce(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	var req ForceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "Неверный формат запроса"})
+		return
+	}
+
+	shmPath := fmt.Sprintf("/dev/shm/softplc_db%d_shm", req.DbID)
+	f, err := os.OpenFile(shmPath, os.O_RDWR, 0666)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]any{"success": false, "error": fmt.Sprintf("Не удалось открыть SHM: %v", err)})
+		return
+	}
+	defer f.Close()
+
+	// Запись в зависимости от имени переменной и смещения в DB1
+	// Target_Speed: offset 0 (float32)
+	// Line_Enable:  offset 4 (uint8)
+	// Error_Code:   offset 6 (int16)
+	var offset int64
+	var rawBytes []byte
+
+	switch req.VarName {
+	case "Target_Speed":
+		offset = 0
+		val, err := strconv.ParseFloat(req.ValueStr, 32)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "Некорректное значение REAL"})
+			return
+		}
+		rawBytes = make([]byte, 4)
+		binary.LittleEndian.PutUint32(rawBytes, math.Float32bits(float32(val)))
+
+	case "Line_Enable":
+		offset = 4
+		val := req.ValueStr == "true" || req.ValueStr == "1" || req.ValueStr == "TRUE"
+		rawBytes = []byte{0}
+		if val {
+			rawBytes[0] = 1
+		}
+
+	case "Error_Code":
+		offset = 6
+		val, err := strconv.Atoi(req.ValueStr)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "Некорректное значение INT"})
+			return
+		}
+		rawBytes = make([]byte, 2)
+		binary.LittleEndian.PutUint16(rawBytes, uint16(int16(val)))
+
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "Переменная не найдена для форсирования"})
+		return
+	}
+
+	if _, err := f.WriteAt(rawBytes, offset); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]any{"success": false, "error": fmt.Sprintf("Ошибка записи в SHM: %v", err)})
+		return
+	}
+
+	log.Printf("[FORCE] Успешно записано %s = %s в DB%d (смещение %d)", req.VarName, req.ValueStr, req.DbID, offset)
+
+	json.NewEncoder(w).Encode(map[string]any{
+		"success": true,
+		"message": fmt.Sprintf("Форсировано: %s := %s", req.VarName, req.ValueStr),
+	})
+}
+
+func handleLiveWS(w http.ResponseWriter, r *http.Request) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("[WS] Ошибка Upgrade: %v", err)
 		return
 	}
 	defer conn.Close()
 
-	log.Printf("[WS] Подключен клиент мониторинга: %s", conn.RemoteAddr())
+	clientsMu.Lock()
+	clients[conn] = true
+	clientsMu.Unlock()
 
-	ticker := time.NewTicker(50 * time.Millisecond) // 20 Гц
-	defer ticker.Stop()
+	defer func() {
+		clientsMu.Lock()
+		delete(clients, conn)
+		clientsMu.Unlock()
+	}()
 
-	for range ticker.C {
-		snapshot, err := shm.ReadDB1()
-		if err != nil {
-			continue
-		}
-
-		if err := conn.WriteJSON(snapshot); err != nil {
-			log.Printf("[WS] Клиент отключился: %v", err)
+	for {
+		if _, _, err := conn.ReadMessage(); err != nil {
 			break
 		}
 	}
 }
 
+func readLiveShm() map[string]any {
+	shmPath := "/dev/shm/softplc_db1_shm"
+	buf, err := os.ReadFile(shmPath)
+	if err != nil || len(buf) < 8 {
+		return map[string]any{
+			"Target_Speed": 0.0,
+			"Line_Enable":  false,
+			"Error_Code":   0,
+		}
+	}
+
+	bits := binary.LittleEndian.Uint32(buf[0:4])
+	speed := math.Float32frombits(bits)
+	enable := buf[4] != 0
+	errorCode := int16(binary.LittleEndian.Uint16(buf[6:8]))
+
+	return map[string]any{
+		"Target_Speed": math.Round(float64(speed)*10) / 10,
+		"Line_Enable":  enable,
+		"Error_Code":   errorCode,
+	}
+}
+
+func startShmBroadcaster() {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	go func() {
+		for range ticker.C {
+			clientsMu.Lock()
+			count := len(clients)
+			clientsMu.Unlock()
+
+			if count == 0 {
+				continue
+			}
+
+			snapshot := readLiveShm()
+			data, _ := json.Marshal(snapshot)
+
+			clientsMu.Lock()
+			for conn := range clients {
+				if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+					conn.Close()
+					delete(clients, conn)
+				}
+			}
+			clientsMu.Unlock()
+		}
+	}()
+}
+
 func main() {
-	http.HandleFunc("/api/build", handleBuild)
-	http.HandleFunc("/ws/live", handleWebSocket)
+	startShmBroadcaster()
 
-	addr := ":8080"
-	log.Printf("==================================================")
-	log.Printf("[Web-SoftPLC Gateway] Сервер запущен на http://localhost%s", addr)
-	log.Printf("REST API:   POST http://localhost%s/api/build", addr)
-	log.Printf("WebSocket:  ws://localhost%s/ws/live", addr)
-	log.Printf("==================================================")
+	http.HandleFunc("/api/build", enableCORS(handleBuild))
+	http.HandleFunc("/api/force", enableCORS(handleForce))
+	http.HandleFunc("/ws/live", handleLiveWS)
 
-	if err := http.ListenAndServe(addr, nil); err != nil {
-		log.Fatalf("Ошибка сервера: %v", err)
+	log.Println("[Web-SoftPLC Gateway] Сервер слушает :8080 (Force API enabled)")
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		log.Fatalf("Fatal: %v", err)
 	}
 }

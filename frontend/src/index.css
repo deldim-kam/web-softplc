@@ -26,3 +26,31 @@ html, body, #root {
 ::-webkit-scrollbar-thumb:hover {
   background: #555555;
 }
+
+/* Стилизация inline-мониторинга значений в коде */
+.monaco-inline-value {
+  margin-left: 6px;
+  padding: 1px 5px;
+  font-size: 11px;
+  font-family: Consolas, "Courier New", monospace;
+  border-radius: 3px;
+  font-weight: 700;
+}
+
+.monaco-inline-value-bool-true {
+  background-color: #064e3b;
+  color: #34d399;
+  border: 1px solid #059669;
+}
+
+.monaco-inline-value-bool-false {
+  background-color: #1e293b;
+  color: #94a3b8;
+  border: 1px solid #475569;
+}
+
+.monaco-inline-value-num {
+  background-color: #0c4a6e;
+  color: #38bdf8;
+  border: 1px solid #0284c7;
+}

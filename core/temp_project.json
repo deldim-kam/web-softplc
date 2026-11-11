@@ -1,0 +1,45 @@
+{
+  "datablocks": [
+    {
+      "id": 1,
+      "name": "Line_Params",
+      "type": "global",
+      "variables": [
+        {
+          "comment": "Заданная скорость (об/мин)",
+          "initValue": "1500.0",
+          "name": "Target_Speed",
+          "retain": false,
+          "type": "REAL"
+        },
+        {
+          "comment": "Разрешение работы линии",
+          "initValue": "true",
+          "name": "Line_Enable",
+          "retain": false,
+          "type": "BOOL"
+        },
+        {
+          "comment": "Код аварийной остановки",
+          "initValue": "0",
+          "name": "Error_Code",
+          "retain": true,
+          "type": "INT"
+        }
+      ]
+    }
+  ],
+  "programs": [
+    {
+      "code": "// Циклическая программа управления конвейерной линией\nIF \"Line_Params\".Line_Enable THEN\n    \"Line_Params\".Error_Code := 0;\n    \"Line_Params\".Target_Speed := 2750.0;\nELSE\n    \"Line_Params\".Target_Speed := 0.0;\nEND_IF;",
+      "language": "ST",
+      "name": "Main_Conveyor"
+    }
+  ],
+  "projectName": "Conveyor_Control",
+  "target": {
+    "arch": "x86_64",
+    "cycleTimeMs": 10
+  },
+  "version": "1.0.0"
+}

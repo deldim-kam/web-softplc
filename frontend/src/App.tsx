@@ -45,8 +45,8 @@ export default function App() {
   const [liveData, setLiveData] = useState<LiveDbSnapshot | null>(null);
   const [isWsConnected, setIsWsConnected] = useState(false);
   const [isBuilding, setIsBuilding] = useState(false);
-  const [statusMessage, setStatusMessage] = useState<string>("Ядро остановлено или ожидает подключения");
-  const [activeView, setActiveView] = useState<'db1' | 'st_main'>('db1');
+  const [statusMessage, setStatusMessage] = useState<string>("Готов к работе");
+  const [activeView, setActiveView] = useState<'db1' | 'st_main'>('st_main');
   const [treeOpen, setTreeOpen] = useState({ blocks: true, dbs: true, progs: true });
 
   useEffect(() => {
@@ -54,7 +54,7 @@ export default function App() {
 
     ws.onopen = () => {
       setIsWsConnected(true);
-      setStatusMessage("PLC Core в сети: Shared Memory /dev/shm подключена (20 Hz)");
+      setStatusMessage("PLC Core Online: Shared Memory /dev/shm подключена (20 Hz)");
     };
     ws.onclose = () => {
       setIsWsConnected(false);
@@ -95,13 +95,13 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen w-screen select-none bg-[#1e1e1e] text-[#cccccc]">
-      {/* 1. Верхний Command Bar в стиле среды разработки */}
+      {/* 1. Верхний Command Bar */}
       <header className="h-10 bg-[#2d2d30] border-b border-[#3e3e42] px-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 text-white font-semibold text-sm">
             <Cpu size={16} className="text-[#007acc]" />
             <span>Web-SoftPLC IDE</span>
-            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#3e3e42] text-[#858585]">RT-Linux</span>
+            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#3e3e42] text-[#858585]">Sprint 6</span>
           </div>
           <span className="text-[#555555]">|</span>
           <span className="text-xs text-[#999999]">{project.projectName} ({project.target.cycleTimeMs} ms)</span>
@@ -126,10 +126,10 @@ export default function App() {
         </div>
       </header>
 
-      {/* 2. Главная рабочая область (Рабочий стол + Дерево справа) */}
+      {/* 2. Главная рабочая область */}
       <div className="flex-1 flex overflow-hidden">
         
-        {/* Центральная рабочая панель (Таблица или Редактор ST) */}
+        {/* Центральная рабочая панель */}
         <div className="flex-1 flex flex-col min-w-0 bg-[#1e1e1e]">
           {/* Вкладки открытых документов */}
           <div className="h-9 bg-[#252526] border-b border-[#2d2d30] flex items-center px-2 gap-1 text-xs">
@@ -176,6 +176,8 @@ export default function App() {
               <StEditor
                 program={project.programs[0]}
                 datablocks={project.datablocks}
+                liveData={liveData}
+                isOnline={isWsConnected}
                 onChange={(newCode) => {
                   const progs = [...project.programs];
                   progs[0] = { ...progs[0], code: newCode };
@@ -186,7 +188,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* ПРАВАЯ ПАНЕЛЬ: Дерево проекта (Project Tree в стиле TIA Portal) */}
+        {/* Правая панель Project Tree */}
         <aside className="w-64 bg-[#252526] border-l border-[#2d2d30] flex flex-col text-xs select-none">
           <div className="h-9 px-3 border-b border-[#2d2d30] flex items-center font-semibold text-[#cccccc] uppercase tracking-wider text-[11px]">
             <Layers size={14} className="mr-2 text-[#007acc]" />
@@ -194,13 +196,11 @@ export default function App() {
           </div>
 
           <div className="flex-1 overflow-y-auto p-2 space-y-1 font-mono text-[12px]">
-            {/* Узел ПЛК */}
             <div className="flex items-center gap-1.5 text-[#e1e1e1] font-semibold py-1">
               <Cpu size={14} className="text-[#4ec9b0]" />
               <span>PLC_1 [SoftPLC-RT]</span>
             </div>
 
-            {/* Ветка Program blocks */}
             <div className="pl-3">
               <div 
                 className="flex items-center gap-1.5 py-1 text-[#cccccc] cursor-pointer hover:text-white"
@@ -213,7 +213,6 @@ export default function App() {
 
               {treeOpen.blocks && (
                 <div className="pl-4 space-y-0.5">
-                  {/* Подраздел Data Blocks */}
                   {project.datablocks.map(db => (
                     <div
                       key={db.id}
@@ -227,7 +226,6 @@ export default function App() {
                     </div>
                   ))}
 
-                  {/* Подраздел ST программ */}
                   {project.programs.map(prog => (
                     <div
                       key={prog.name}
