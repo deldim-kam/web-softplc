@@ -1,92 +1,116 @@
-# Web-SoftPLC
+# Web-SoftPLC IDE
 
-[![Go](https://img.shields.io/badge/Go-1.20%2B-00ADD8.svg)](#implemented-features)
-[![IEC 61131-3](https://img.shields.io/badge/Standard-IEC%2061131--3-orange.svg)](#project-format)
+**Web-SoftPLC** — открытая веб-среда разработки и программный ПЛК (SoftPLC) реального времени, вдохновлённый классической архитектурой промышленных систем (Siemens TIA Portal, CODESYS) и стандартами IEC 61131-3.
 
-[English](#english) | [Русский](#russian)
-
----
-
-<a id="english"></a>
-## English
-
-Web-SoftPLC is an open-source project for a web-based SoftPLC engineering environment. The repository currently provides a JSON project contract, a Go parser and validator, and a C99 data-block header generator. The web frontend, server API, and real-time runtime are not yet present.
-
-### Implemented Features
-
-- Parse and validate project JSON against the supported project fields and value constraints.
-- Read project files using `ParseProjectFile`.
-- Generate and write C99 headers for data blocks, including validated initializers and `RETAIN` annotations.
-- Run the Go test suite with `go test ./...`.
-
-### Project Format
-
-- [JSON Schema](contracts/project.schema.json)
-- [Sample project](contracts/sample_project.json)
-
-The current contract supports `x86_64`, `arm64`, and `armv7l` targets; `global` and `instance` data blocks; `BOOL`, `INT`, `DINT`, `REAL`, `TIME`, and `WORD` variables; and `ST` and `FBD` program language labels.
-
-### Repository Structure
-
-```text
-.
-├── contracts/
-│   ├── project.schema.json
-│   └── sample_project.json
-├── datablocks_header.go
-├── project.go
-├── project_test.go
-└── go.mod
-```
-
-### Roadmap
-
-- [x] Define the project JSON schema and sample.
-- [x] Implement project parsing, validation, and data-block header generation.
-- [ ] Add the Structured Text compiler and toolchain integration.
-- [ ] Build the real-time C runtime and hot-reload support.
-- [ ] Add the backend API and online diagnostics.
-- [ ] Develop the web-based editors and target deployment tools.
+Комплекс объединяет детерминированное RT-ядро исполнения на языке Си, шлюз на Go для компиляции и обмена данными, а также современную веб-среду разработки на React, TypeScript, Tailwind CSS и Monaco Editor.
 
 ---
 
-<a id="russian"></a>
-## Русский
+## 🏗 Архитектура системы
 
-Web-SoftPLC — открытый проект веб-среды для разработки SoftPLC. Сейчас в репозитории есть JSON-контракт проекта, парсер и валидатор на Go, а также генератор заголовочных файлов C99 для блоков данных. Веб-интерфейс, серверный API и система исполнения реального времени пока не реализованы.
-
-### Реализованные возможности
-
-- Разбор и проверка JSON-проектов по поддерживаемым полям и ограничениям значений.
-- Чтение файлов проекта через `ParseProjectFile`.
-- Генерация и запись заголовочных файлов C99 для блоков данных с проверкой начальных значений и пометок `RETAIN`.
-- Запуск тестов Go командой `go test ./...`.
-
-### Формат проекта
-
-- [JSON-схема](contracts/project.schema.json)
-- [Пример проекта](contracts/sample_project.json)
-
-Контракт поддерживает цели `x86_64`, `arm64` и `armv7l`; блоки данных `global` и `instance`; типы переменных `BOOL`, `INT`, `DINT`, `REAL`, `TIME` и `WORD`; метки языков программ `ST` и `FBD`.
-
-### Структура репозитория
-
-```text
-.
-├── contracts/
-│   ├── project.schema.json
-│   └── sample_project.json
-├── datablocks_header.go
-├── project.go
-├── project_test.go
-└── go.mod
+```
+                      +---------------------------------------+
+                      |       Web Browser IDE (:5173)         |
+                      |  React + Vite + Tailwind + Monaco ST  |
+                      +-------------------+-------------------+
+                                          |
+                        HTTP POST /build  |  WebSocket :8080/ws/live
+                        HTTP POST /force  |  (Live SHM Snapshot 20 Hz)
+                                          v
+                      +---------------------------------------+
+                      |          Go Gateway (:8080)           |
+                      |   Process Lifecycle, REST API, WS     |
+                      +-------------------+-------------------+
+                                          |
+                         SIGUSR1 (Reload) |  mmap /dev/shm
+                                          v
++-----------------------------------------------------------------------------+
+|                         C-Kernel (RT-POSIX Engine)                          |
+|                                                                             |
+|   +--------------------------+          +-------------------------------+   |
+|   |   Shared Memory Manager  | <------> |     Dynamic Logic Loader      |   |
+|   |  (/dev/shm/softplc_db*)  |          |      (dlopen logic.so)        |   |
+|   +--------------------------+          +-------------------------------+   |
+|                                                                             |
+|   Детерминированный цикл (clock_nanosleep): 10 мс (100 Hz)                  |
++-----------------------------------------------------------------------------+
 ```
 
-### План разработки
+---
 
-- [x] Определить JSON-схему проекта и подготовить пример.
-- [x] Реализовать разбор и проверку проекта, генерацию заголовков блоков данных.
-- [ ] Добавить компилятор Structured Text и интеграцию с инструментарием сборки.
-- [ ] Создать ядро реального времени на C и поддержку горячей замены логики.
-- [ ] Добавить серверный API и диагностику в реальном времени.
-- [ ] Разработать веб-редакторы и инструменты развертывания на целевых устройствах.
+## ✨ Ключевые возможности
+
+* **RT-Ядро (C/POSIX):**
+  * Строгий фиксированный цикл сканирования (10 мс / 100 Hz) с использованием монотонного таймера `clock_nanosleep(CLOCK_MONOTONIC)`.
+  * Разделяемая память (`/dev/shm`) для глобальных блоков данных (Data Blocks).
+  * **Hot-Reload логики без останова ПЛК:** ядро перехватывает сигнал `SIGUSR1`, безопасно выгружает предыдущий динамический модуль и на лету подгружает новый скомпилированный `logic.so` через `dlopen` / `dlsym`.
+
+* **Транслятор и шлюз (Go):**
+  * Парсер JSON-контрактов проектов и генератор чистого C-кода для программ на IEC 61131-3 Structured Text (ST).
+  * Автоматический запуск компилятора GCC для генерации разделяемой библиотеки `logic.so`.
+  * Прямое бинарное чтение разделяемой памяти `/dev/shm/softplc_db1_shm` и широковещательная трансляция состояния переменных в WebSocket (20 Hz).
+  * **Force Value API:** эндпоинт `POST /api/force` для принудительной побайтовой записи значений переменных в разделяемую память.
+
+* **Web IDE (React 18 + Vite + Monaco Editor):**
+  * **Industrial Layout:** компоновка в стиле классических инженерных сред (TIA Portal / CODESYS).
+  * **Project Tree:** дерево проекта с узлами контроллера, каталогом Data Blocks и программными модулями.
+  * **Data Block Editor:** строгая табличная сетка переменных с поддержкой типов IEC (`BOOL`, `INT`, `DINT`, `REAL`, `TIME`, `WORD`), флагов `Retain` и живых онлайн-значений.
+  * **Force Modal:** вызов диалогового окна форсирования значения по клику на ячейку «Online значение» или двойному клику по строке.
+  * **Monaco ST Editor:** кастомный Monarch-токенизатор подсветки синтаксиса IEC 61131-3, автодополнение тегов вида `"DB".Variable` по `Ctrl+Space`.
+  * **Live Inline Monitoring:** отображение реальных значений прямо поверх строк исходного кода ST с тумблером включения/выключения мониторинга (`Monitoring: ON/OFF`).
+
+---
+
+## 🚀 Быстрый старт
+
+### Требования к окружению
+
+* **ОС:** Linux (Ubuntu 22.04+ / EndeavourOS / WSL 2 на Windows)
+* **Инструменты:**
+  * `gcc`, `make`, `build-essential`
+  * `go` (1.22+)
+  * `node.js` (20 LTS+) и `npm`
+
+### Запуск всего комплекса одной командой
+
+Клонируйте репозиторий и выполните скрипт запуска:
+
+```bash
+git clone git@github.com:deldim-kam/web-softplc.git
+cd web-softplc
+
+# Установка зависимостей веб-интерфейса
+cd frontend && npm install && cd ..
+
+# Запуск RT-ядра, Go-шлюза и Web IDE
+chmod +x start.sh
+./start.sh
+```
+
+После старта веб-интерфейс доступен в браузере по адресу:
+👉 **`http://localhost:5173`**
+
+Для корректной остановки всех подсистем и освобождения ресурсов `/dev/shm` нажмите **`Ctrl + C`** в окне терминала.
+
+---
+
+## 📁 Структура проекта
+
+```
+web-softplc/
+├── core/                   # Ядро ПЛК на языке Си
+│   ├── include/            # Заголовочные файлы (db_registry, logic_loader)
+│   ├── src/                # Реализация RT-цикла, SHM и загрузчика logic.so
+│   └── Makefile            # Сборка бинарника softplc
+├── backend/                # Go Gateway и транслятор ST->C
+│   ├── cmd/compiler/       # CLI-компилятор проекта в C-код и logic.so
+│   ├── cmd/server/         # HTTP REST API, WebSocket и Force Controller
+│   └── go.mod
+├── frontend/               # Веб-среда разработки IDE
+│   ├── src/components/     # Таблица DbEditor, редактор StEditor
+│   ├── src/editor/         # Monarch-токенизатор IEC 61131-3 ST
+│   └── src/types/          # TypeScript типы ПЛК
+├── contracts/              # JSON-схемы проектов и блоков данных
+├── start.sh                # Скрипт автоматического запуска комплекса
+└── README.md
+```
