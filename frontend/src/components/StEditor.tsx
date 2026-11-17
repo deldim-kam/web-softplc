@@ -2,23 +2,28 @@ import React, { useRef, useEffect, useState } from 'react';
 import Editor from '@monaco-editor/react';
 import type { Monaco } from '@monaco-editor/react';
 import type { editor } from 'monaco-editor';
-import type { DataBlock, Program, LiveDbSnapshot } from '../types/plc';
+import type { DataBlock, Program, LiveDbSnapshot, ProgramBlock } from '../types/plc';
+import type { ForceEntry } from './DbEditor';
 import { ST_LANGUAGE_ID, stLanguageConfig, stMonarchTokens } from '../editor/stLanguage';
 import { Code2, BookOpen, Eye, EyeOff } from 'lucide-react';
 
 interface StEditorProps {
   program: Program;
   datablocks: DataBlock[];
+  programBlocks?: ProgramBlock[];
   liveData: LiveDbSnapshot | null;
   isOnline: boolean;
+  activeForces?: Record<string, ForceEntry>;
   onChange: (newCode: string) => void;
 }
 
 export const StEditor: React.FC<StEditorProps> = ({
   program,
   datablocks,
+  programBlocks = [],
   liveData,
   isOnline,
+  activeForces = {},
   onChange,
 }) => {
   const monacoRef = useRef<Monaco | null>(null);
@@ -35,7 +40,7 @@ export const StEditor: React.FC<StEditorProps> = ({
       monaco.languages.setMonarchTokensProvider(ST_LANGUAGE_ID, stMonarchTokens);
 
       monaco.languages.registerCompletionItemProvider(ST_LANGUAGE_ID, {
-        triggerCharacters: ['.', '"'],
+        triggerCharacters: ['.', '"', '('],
         provideCompletionItems: (_model: any, _position: any) => {
           const suggestions: any[] = [];
           datablocks.forEach((db) => {
@@ -54,6 +59,14 @@ export const StEditor: React.FC<StEditorProps> = ({
               });
             });
           });
+          programBlocks.filter(b => b.blockType === 'FC').forEach(fc => {
+            suggestions.push({
+              label: `"${fc.name}"()`,
+              kind: monaco.languages.CompletionItemKind.Function,
+              insertText: `"${fc.name}"();`,
+              detail: `Function FC${fc.id}`,
+            });
+          });
           return { suggestions };
         },
       });
@@ -65,15 +78,12 @@ export const StEditor: React.FC<StEditorProps> = ({
     decorationsCollectionRef.current = editorInstance.createDecorationsCollection();
   };
 
-  // Механизм наложения декораций live-значений
   useEffect(() => {
     const editorInstance = editorRef.current;
     const monacoInstance = monacoRef.current;
     const decorationsCollection = decorationsCollectionRef.current;
 
-    if (!editorInstance || !monacoInstance || !decorationsCollection) {
-      return;
-    }
+    if (!editorInstance || !monacoInstance || !decorationsCollection) return;
 
     if (!monitoringEnabled || !isOnline || !liveData) {
       decorationsCollection.clear();
@@ -94,6 +104,7 @@ export const StEditor: React.FC<StEditorProps> = ({
       while ((match = regex.exec(lineContent)) !== null) {
         const varName = match[2];
         const val = liveData[varName];
+        const isForced = activeForces[varName]?.active;
 
         if (val !== undefined) {
           const startCol = match.index + 1;
@@ -111,11 +122,17 @@ export const StEditor: React.FC<StEditorProps> = ({
             displayStr = Number.isInteger(val) ? val.toString() : val.toFixed(1);
           }
 
+          if (isForced) {
+            cssClass = 'monaco-inline-value monaco-inline-value-forced';
+          }
+
+          const prefix = isForced ? 'F =' : '=';
+
           newDecorations.push({
             range: new monacoInstance.Range(lineNum, startCol, lineNum, endCol),
             options: {
               after: {
-                content: ` [= ${displayStr}]`,
+                content: ` [${prefix} ${displayStr}]`,
                 inlineClassName: cssClass,
               },
             },
@@ -125,7 +142,7 @@ export const StEditor: React.FC<StEditorProps> = ({
     }
 
     decorationsCollection.set(newDecorations);
-  }, [liveData, isOnline, monitoringEnabled, program.code]);
+  }, [liveData, isOnline, monitoringEnabled, program.code, activeForces]);
 
   return (
     <div className="bg-[#1e1e1e] border border-[#2d2d30] flex flex-col h-full overflow-hidden">

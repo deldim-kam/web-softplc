@@ -25,7 +25,13 @@ var upgrader = websocket.Upgrader{
 var (
 	clients   = make(map[*websocket.Conn]bool)
 	clientsMu sync.Mutex
+	buildMu   sync.Mutex
 )
+
+type ForceEntry struct {
+	Active bool   `json:"active"`
+	Value  string `json:"value"`
+}
 
 func enableCORS(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -50,6 +56,30 @@ func getCorePID() (int, error) {
 	return strconv.Atoi(pidStr)
 }
 
+func runCompileAndReload() (string, error) {
+	buildMu.Lock()
+	defer buildMu.Unlock()
+
+	cmd := exec.Command("./bin/softplc-compiler",
+		"-project=../core/temp_project.json",
+		"-include=../core/include",
+		"-out=../core",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), err
+	}
+
+	pid, err := getCorePID()
+	if err == nil {
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Signal(syscall.SIGUSR1)
+			log.Printf("[HOT RELOAD] SIGUSR1 отправлен core PID %d", pid)
+		}
+	}
+	return "OK", nil
+}
+
 func handleBuild(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -60,35 +90,21 @@ func handleBuild(w http.ResponseWriter, r *http.Request) {
 	var projectData any
 	if err := json.NewDecoder(r.Body).Decode(&projectData); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "Неверный JSON"})
+		json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "Неверный JSON проекта"})
 		return
 	}
 
-	tempProjectFile := "../core/temp_project.json"
 	fileBytes, _ := json.MarshalIndent(projectData, "", "  ")
-	_ = os.WriteFile(tempProjectFile, fileBytes, 0644)
+	_ = os.WriteFile("../core/temp_project.json", fileBytes, 0644)
 
-	cmd := exec.Command("./bin/softplc-compiler",
-		"-project="+tempProjectFile,
-		"-include=../core/include",
-		"-out=../core",
-	)
-	output, err := cmd.CombinedOutput()
+	out, err := runCompileAndReload()
 	if err != nil {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(map[string]any{
 			"success": false,
-			"error":   fmt.Sprintf("Ошибка компиляции: %s", string(output)),
+			"error":   fmt.Sprintf("Ошибка компиляции: %s", out),
 		})
 		return
-	}
-
-	pid, err := getCorePID()
-	if err == nil {
-		if proc, err := os.FindProcess(pid); err == nil {
-			_ = proc.Signal(syscall.SIGUSR1)
-			log.Printf("[HOT RELOAD] SIGUSR1 отправлен процессу PID %d", pid)
-		}
 	}
 
 	json.NewEncoder(w).Encode(map[string]any{
@@ -97,15 +113,47 @@ func handleBuild(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Запрос на форсирование значения переменной
+func handleGeneratedC(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	content, err := os.ReadFile("../core/logic.c")
+	if err != nil {
+		json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"code":    "// Файл logic.c ещё не сгенерирован.\n// Нажмите 'Build & Hot Reload'.",
+		})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{
+		"success": true,
+		"code":    string(content),
+	})
+}
+
 type ForceRequest struct {
 	DbID     int    `json:"dbId"`
 	VarName  string `json:"varName"`
-	VarType  string `json:"varType"`
 	ValueStr string `json:"value"`
+	Active   bool   `json:"active"` // true = включить Force, false = снять Force (Unforce)
 }
 
-// Прямая запись байтов в /dev/shm
+func loadForces() map[string]ForceEntry {
+	forces := make(map[string]ForceEntry)
+	if data, err := os.ReadFile("../core/force_state.json"); err == nil {
+		_ = json.Unmarshal(data, &forces)
+	}
+	return forces
+}
+
+func saveForces(forces map[string]ForceEntry) {
+	data, _ := json.MarshalIndent(forces, "", "  ")
+	_ = os.WriteFile("../core/force_state.json", data, 0644)
+}
+
+func handleGetForces(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(loadForces())
+}
+
 func handleForce(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -120,70 +168,43 @@ func handleForce(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	shmPath := fmt.Sprintf("/dev/shm/softplc_db%d_shm", req.DbID)
-	f, err := os.OpenFile(shmPath, os.O_RDWR, 0666)
-	if err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]any{"success": false, "error": fmt.Sprintf("Не удалось открыть SHM: %v", err)})
-		return
+	cleanVal := strings.TrimSpace(cleanVal)
+	if req.Active {
+		// Очищаем ведущие нули (чтобы 01500 не превращалось в восьмеричный литерал Си)
+		if cleanVal != "true" && cleanVal != "false" && cleanVal != "TRUE" && cleanVal != "FALSE" {
+			if fVal, err := strconv.ParseFloat(cleanVal, 64); err == nil {
+				cleanVal = strconv.FormatFloat(fVal, 'f', -1, 64)
+			}
+		}
+		forces := loadForces()
+		forces[req.VarName] = ForceEntry{Active: true, Value: cleanVal}
+		saveForces(forces)
+	} else {
+		forces := loadForces()
+		delete(forces, req.VarName)
+		saveForces(forces)
 	}
-	defer f.Close()
 
-	// Запись в зависимости от имени переменной и смещения в DB1
-	// Target_Speed: offset 0 (float32)
-	// Line_Enable:  offset 4 (uint8)
-	// Error_Code:   offset 6 (int16)
-	var offset int64
-	var rawBytes []byte
+	forces := loadForces()
 
-	switch req.VarName {
-	case "Target_Speed":
-		offset = 0
-		val, err := strconv.ParseFloat(req.ValueStr, 32)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "Некорректное значение REAL"})
-			return
-		}
-		rawBytes = make([]byte, 4)
-		binary.LittleEndian.PutUint32(rawBytes, math.Float32bits(float32(val)))
-
-	case "Line_Enable":
-		offset = 4
-		val := req.ValueStr == "true" || req.ValueStr == "1" || req.ValueStr == "TRUE"
-		rawBytes = []byte{0}
-		if val {
-			rawBytes[0] = 1
-		}
-
-	case "Error_Code":
-		offset = 6
-		val, err := strconv.Atoi(req.ValueStr)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "Некорректное значение INT"})
-			return
-		}
-		rawBytes = make([]byte, 2)
-		binary.LittleEndian.PutUint16(rawBytes, uint16(int16(val)))
-
-	default:
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]any{"success": false, "error": "Переменная не найдена для форсирования"})
+	// Перекомпилируем логику с учётом обновления маски Force и делаем Hot Reload
+	if out, err := runCompileAndReload(); err != nil {
+		json.NewEncoder(w).Encode(map[string]any{
+			"success": false,
+			"error":   fmt.Sprintf("Ошибка применения Force при сборке: %s", out),
+		})
 		return
 	}
 
-	if _, err := f.WriteAt(rawBytes, offset); err != nil {
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(map[string]any{"success": false, "error": fmt.Sprintf("Ошибка записи в SHM: %v", err)})
-		return
+	msg := fmt.Sprintf("Force ВКЛЮЧЁН: %s := %s", req.VarName, cleanVal)
+	if !req.Active {
+		msg = fmt.Sprintf("Force СНЯТ (Unforce): %s", req.VarName)
 	}
-
-	log.Printf("[FORCE] Успешно записано %s = %s в DB%d (смещение %d)", req.VarName, req.ValueStr, req.DbID, offset)
 
 	json.NewEncoder(w).Encode(map[string]any{
 		"success": true,
-		"message": fmt.Sprintf("Форсировано: %s := %s", req.VarName, req.ValueStr),
+		"message": msg,
+		"forces":  forces,
 	})
 }
 
@@ -237,6 +258,12 @@ func readLiveShm() map[string]any {
 func startShmBroadcaster() {
 	ticker := time.NewTicker(50 * time.Millisecond)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[PANIC RECOVER] ShmBroadcaster: %v", r)
+			}
+		}()
+
 		for range ticker.C {
 			clientsMu.Lock()
 			count := len(clients)
@@ -247,7 +274,10 @@ func startShmBroadcaster() {
 			}
 
 			snapshot := readLiveShm()
-			data, _ := json.Marshal(snapshot)
+			data, err := json.Marshal(snapshot)
+			if err != nil {
+				continue
+			}
 
 			clientsMu.Lock()
 			for conn := range clients {
@@ -266,9 +296,11 @@ func main() {
 
 	http.HandleFunc("/api/build", enableCORS(handleBuild))
 	http.HandleFunc("/api/force", enableCORS(handleForce))
+	http.HandleFunc("/api/forces", enableCORS(handleGetForces))
+	http.HandleFunc("/api/generated-c", enableCORS(handleGeneratedC))
 	http.HandleFunc("/ws/live", handleLiveWS)
 
-	log.Println("[Web-SoftPLC Gateway] Сервер слушает :8080 (Force API enabled)")
+	log.Println("[Web-SoftPLC Gateway] Сервер слушает :8080 (Force Override & C-Viewer active)")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		log.Fatalf("Fatal: %v", err)
 	}

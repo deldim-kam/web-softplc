@@ -8,30 +8,49 @@ export interface Variable {
   comment?: string;
 }
 
+export type BlockType = 'OB' | 'FB' | 'FC';
+
+export interface ProgramBlock {
+  id: number;
+  blockType: BlockType;
+  name: string;
+  language: 'ST';
+  title?: string;
+  code: string;
+  inputs?: Variable[];
+  outputs?: Variable[];
+  inOuts?: Variable[];
+  staticVars?: Variable[];
+}
+
+// Алиас для обратной совместимости с редакторами кода
+export interface Program {
+  name: string;
+  language: 'ST';
+  code: string;
+}
+
+export type DataBlockType = 'global' | 'instance';
+
 export interface DataBlock {
   id: number;
   name: string;
-  type: 'global' | 'instance';
+  type: DataBlockType;
+  assignedFbId?: number;
   variables: Variable[];
 }
 
-export interface Program {
-  name: string;
-  language: string;
-  code: string;
+export interface ProjectTarget {
+  arch: string;
+  cycleTimeMs: number;
 }
 
 export interface Project {
   projectName: string;
   version: string;
-  target: {
-    arch: string;
-    cycleTimeMs: number;
-  };
+  target: ProjectTarget;
   datablocks: DataBlock[];
-  programs: Program[];
+  programBlocks: ProgramBlock[];
 }
 
-export interface LiveDbSnapshot {
-  [key: string]: any;
-}
+export type LiveDbSnapshot = Record<string, boolean | number>;

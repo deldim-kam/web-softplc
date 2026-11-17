@@ -29,11 +29,22 @@
       ]
     }
   ],
-  "programs": [
+  "programBlocks": [
     {
-      "code": "// Циклическая программа управления конвейерной линией\nIF \"Line_Params\".Line_Enable THEN\n    \"Line_Params\".Error_Code := 0;\n    \"Line_Params\".Target_Speed := 2750.0;\nELSE\n    \"Line_Params\".Target_Speed := 0.0;\nEND_IF;",
+      "blockType": "OB",
+      "code": "// OB1: Главный циклический блок управления (10 мс)\nIF \"Line_Params\".Line_Enable THEN\n    \"Line_Params\".Target_Speed := 3500.0;\n    // Вызов функции FC1 для ограничения предельной скорости\n    \"FC1_SpeedLimiter\"();\nELSE\n    \"Line_Params\".Target_Speed := 0.0;\nEND_IF;",
+      "id": 1,
       "language": "ST",
-      "name": "Main_Conveyor"
+      "name": "OB1_Main",
+      "title": "Main Cyclic Organization Block"
+    },
+    {
+      "blockType": "FC",
+      "code": "// FC1: Функция защиты по превышению скорости\nIF \"Line_Params\".Target_Speed \u003e 3000.0 THEN\n    \"Line_Params\".Target_Speed := 3000.0;\n    \"Line_Params\".Error_Code := 101;\nEND_IF;",
+      "id": 1,
+      "language": "ST",
+      "name": "FC1_SpeedLimiter",
+      "title": "Ограничитель предельной скорости"
     }
   ],
   "projectName": "Conveyor_Control",
