@@ -223,14 +223,17 @@ export default function App() {
     fetchGeneratedCCode();
     fetchActiveForces();
 
+    let isCleaningUp = false;
     const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws/live`);
 
     ws.onopen = () => {
+      if (isCleaningUp) return;
       setIsWsConnected(true);
       addLog('SUCCESS', 'Соединение со шлюзом телеметрии установлено (20 Гц).');
     };
     ws.onclose = () => {
+      if (isCleaningUp) return;
       setIsWsConnected(false);
       setCoreRunning(false);
       addLog('ERROR', 'Потеряна связь со шлюзом телеметрии.');
@@ -251,7 +254,7 @@ export default function App() {
         // ignore
       }
     };
-    return () => ws.close();
+    return () => { isCleaningUp = true; ws.close(); };
   }, []);
 
   // Отрисовка мини-графика (осциллографа) для Target_Speed

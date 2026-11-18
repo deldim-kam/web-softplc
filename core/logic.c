@@ -62,7 +62,7 @@ if (db1->Target_Speed > 3000.0) {
         bool rung_flow = true;
         rung_flow = rung_flow && ((db1->Line_Enable != 0));
         if (ctx->rlo_status) ctx->rlo_status[1] = rung_flow ? 1 : 0;
-        rung_flow = rung_flow && (((float)(db1->Target_Speed) >= (float)(3000.0)));
+        rung_flow = rung_flow && (((float)(db1->Target_Speed) >= (float)(2000.0)));
         if (ctx->rlo_status) ctx->rlo_status[2] = rung_flow ? 1 : 0;
         if (rung_flow) { db1->Error_Code = (100) + (1); }
         if (ctx->rlo_status) ctx->rlo_status[3] = rung_flow ? 1 : 0;

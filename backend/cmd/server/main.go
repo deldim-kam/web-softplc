@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -133,8 +134,7 @@ func syncForcesToSysShm() {
 	// cycle_tick (8) + timestamp_ns (8) + scan_time_us (4) + jitter_us (4) + max_jitter_us (4) + core_running (1) + rlo_status (256) = 285 байт
 	// force_count (4 байта на смещении 285), затем массив forces[64] по 14 байт каждый (начиная со смещения 289)
 	const forceCountOffset = 285
-	const forceArrayOffset = 289
-	const itemSize = 14
+		const itemSize = 14
 
 	buf := make([]byte, 4+64*itemSize)
 	forcesMu.RLock()
