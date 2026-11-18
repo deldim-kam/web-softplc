@@ -1,35 +1,64 @@
 {
-  "projectName": "Conveyor_Control",
-  "version": "1.0.0",
-  "target": { "arch": "x86_64", "cycleTimeMs": 10 },
   "datablocks": [
     {
       "id": 1,
       "name": "Line_Params",
       "type": "global",
       "variables": [
-        { "name": "Target_Speed", "type": "REAL", "initValue": "1500.0", "retain": false, "comment": "Заданная скорость (об/мин)" },
-        { "name": "Line_Enable", "type": "BOOL", "initValue": "true", "retain": false, "comment": "Разрешение работы линии" },
-        { "name": "Error_Code", "type": "INT", "initValue": "0", "retain": true, "comment": "Код аварийной остановки" }
+        {
+          "comment": "Заданная скорость (об/мин)",
+          "initValue": "1500.0",
+          "name": "Target_Speed",
+          "retain": false,
+          "type": "REAL"
+        },
+        {
+          "comment": "Разрешение работы линии",
+          "initValue": "true",
+          "name": "Line_Enable",
+          "retain": false,
+          "type": "BOOL"
+        },
+        {
+          "comment": "Код аварийной диагностики",
+          "initValue": "0",
+          "name": "Error_Code",
+          "retain": true,
+          "type": "INT"
+        }
       ]
     }
   ],
   "programBlocks": [
     {
-      "id": 1,
       "blockType": "OB",
-      "name": "OB1_Main",
+      "code": "// OB1: Главный циклический блок управления (10 мс)\nIF \"Line_Params\".Line_Enable THEN\n    \"Line_Params\".Target_Speed := 3500.0;\n    \"FC1_SpeedLimiter\"();\n    \"FC2_LadderSafety\"();\nELSE\n    \"Line_Params\".Target_Speed := 0.0;\nEND_IF;",
+      "id": 1,
       "language": "ST",
-      "title": "Main Cyclic Organization Block",
-      "code": "// OB1: Главный циклический блок управления (10 мс)\nIF \"Line_Params\".Line_Enable THEN\n    \"Line_Params\".Target_Speed := 3500.0;\n    // Вызов функции FC1 для ограничения предельной скорости\n    \"FC1_SpeedLimiter\"();\nELSE\n    \"Line_Params\".Target_Speed := 0.0;\nEND_IF;"
+      "name": "OB1_Main",
+      "title": "Главный цикл ПЛК (10 мс)"
     },
     {
-      "id": 1,
       "blockType": "FC",
-      "name": "FC1_SpeedLimiter",
+      "code": "// FC1: Ограничение максимальной скорости\nIF \"Line_Params\".Target_Speed \u003e 3000.0 THEN\n    \"Line_Params\".Target_Speed := 3000.0;\nEND_IF;",
+      "id": 1,
       "language": "ST",
-      "title": "Ограничитель предельной скорости",
-      "code": "// FC1: Функция защиты по превышению скорости\nIF \"Line_Params\".Target_Speed > 3000.0 THEN\n    \"Line_Params\".Target_Speed := 3000.0;\n    \"Line_Params\".Error_Code := 101;\nEND_IF;"
+      "name": "FC1_SpeedLimiter",
+      "title": "Ограничитель скорости (ST)"
+    },
+    {
+      "blockType": "FC",
+      "code": "{\n  \"rungs\": [\n    {\n      \"id\": \"r1\",\n      \"title\": \"Цепь 1: Контроль предельной уставки и выставление кода 101\",\n      \"elements\": [\n        {\n          \"id\": \"e1\",\n          \"type\": \"NO\",\n          \"operand1\": \"\\\"Line_Params\\\".Line_Enable\"\n        },\n        {\n          \"id\": \"e2\",\n          \"type\": \"CMP_GE\",\n          \"operand1\": \"\\\"Line_Params\\\".Target_Speed\",\n          \"operand2\": \"3000.0\"\n        },\n        {\n          \"id\": \"e3\",\n          \"type\": \"ADD\",\n          \"operand1\": \"100\",\n          \"operand2\": \"1\",\n          \"operand3\": \"\\\"Line_Params\\\".Error_Code\"\n        }\n      ]\n    },\n    {\n      \"id\": \"r2\",\n      \"title\": \"Цепь 2: Сброс кода аварии при штатном останове линии\",\n      \"elements\": [\n        {\n          \"id\": \"e4\",\n          \"type\": \"NC\",\n          \"operand1\": \"\\\"Line_Params\\\".Line_Enable\"\n        },\n        {\n          \"id\": \"e5\",\n          \"type\": \"SUB\",\n          \"operand1\": \"0\",\n          \"operand2\": \"0\",\n          \"operand3\": \"\\\"Line_Params\\\".Error_Code\"\n        }\n      ]\n    }\n  ]\n}",
+      "id": 2,
+      "language": "LD",
+      "name": "FC2_LadderSafety",
+      "title": "Цепь блокировки и диагностики (LD)"
     }
-  ]
+  ],
+  "projectName": "Conveyor_Control",
+  "target": {
+    "arch": "x86_64",
+    "cycleTimeMs": 10
+  },
+  "version": "2.0.0"
 }
