@@ -784,6 +784,27 @@ export default function App() {
                 liveData={liveData}
                 rloStatus={rloStatus}
                 isCoreRunning={coreRunning}
+                activeForces={activeForces}
+                onForceTag={async (fullTag, value, active) => {
+                  const m = fullTag.match(/^"([^"]+)"\.(.+)$/);
+                  if (!m) return;
+                  const db = project.datablocks.find((d) => d.name === m[1]);
+                  if (!db) return;
+                  try {
+                    const resp = await fetch('/api/force', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ dbId: db.id, varName: m[2], value, active }),
+                    });
+                    const res = await resp.json();
+                    if (res.success) {
+                      setActiveForces(res.forces || {});
+                      addLog('INFO', res.message);
+                    }
+                  } catch (err: any) {
+                    addLog('ERROR', err.message);
+                  }
+                }}
                 onChange={(newCode) => {
                   const pbs = project.programBlocks.map((p) =>
                     p.id === activeProgBlock.id && p.blockType === activeProgBlock.blockType

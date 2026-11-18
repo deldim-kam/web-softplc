@@ -7,7 +7,7 @@
 
 #define PLC_ABI_VERSION 2
 #define MAX_FORCE_ENTRIES 64
-#define MAX_RLO_NODES 256
+#define MAX_RLO_NODES 1024
 
 typedef struct {
     uint16_t id;

@@ -133,7 +133,7 @@ func syncForcesToSysShm() {
 	// В структуре PlcSysShm:
 	// cycle_tick (8) + timestamp_ns (8) + scan_time_us (4) + jitter_us (4) + max_jitter_us (4) + core_running (1) + rlo_status (256) = 285 байт
 	// force_count (4 байта на смещении 285), затем массив forces[64] по 14 байт каждый (начиная со смещения 289)
-	const forceCountOffset = 285
+	const forceCountOffset = 1053
 		const itemSize = 14
 
 	buf := make([]byte, 4+64*itemSize)
@@ -422,10 +422,10 @@ func readTelemetryPacket() map[string]any {
 	var scanTimeUs uint32
 	var jitterUs int32
 	var maxJitterUs int32
-	rloList := make([]bool, 64)
+	rloList := make([]bool, 1024)
 
 	sysBuf, err := os.ReadFile("/dev/shm/softplc_sys_shm")
-	if err == nil && len(sysBuf) >= 285 {
+	if err == nil && len(sysBuf) >= 1053 {
 		cycleTick = binary.LittleEndian.Uint64(sysBuf[0:8])
 		scanTimeUs = binary.LittleEndian.Uint32(sysBuf[16:20])
 		jitterUs = int32(binary.LittleEndian.Uint32(sysBuf[20:24]))
@@ -440,7 +440,7 @@ func readTelemetryPacket() map[string]any {
 			coreRunning = true
 		}
 
-		for i := 0; i < 64; i++ {
+		for i := 0; i < 1024; i++ {
 			rloList[i] = sysBuf[29+i] != 0
 		}
 	}

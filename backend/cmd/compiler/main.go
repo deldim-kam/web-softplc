@@ -31,15 +31,12 @@ type LdElement struct {
 	Operand1 string      `json:"operand1"`
 	Operand2 string      `json:"operand2,omitempty"`
 	Operand3 string      `json:"operand3,omitempty"`
-	RloIndex int         `json:"rloIndex,omitempty"`
-	// Параллельные ветки OR, подключенные параллельно этому элементу
 	Parallel []LdElement `json:"parallel,omitempty"`
 }
 
 type LdRung struct {
 	ID       string      `json:"id"`
 	Title    string      `json:"title"`
-	RloIndex int         `json:"rloIndex,omitempty"`
 	Elements []LdElement `json:"elements"`
 }
 
@@ -51,7 +48,7 @@ type ProgramBlock struct {
 	ID        int    `json:"id"`
 	BlockType string `json:"blockType"`
 	Name      string `json:"name"`
-	Language  string `json:"language"` // "ST" or "LD"
+	Language  string `json:"language"`
 	Code      string `json:"code"`
 }
 
@@ -62,22 +59,12 @@ type Project struct {
 }
 
 var stateInstanceCounter = 0
-var rloNodeCounter = 1
 
 func nextStateIdx() int {
 	idx := stateInstanceCounter
 	stateInstanceCounter++
-	if stateInstanceCounter >= 256 {
+	if stateInstanceCounter >= 512 {
 		stateInstanceCounter = 0
-	}
-	return idx
-}
-
-func nextRloIdx() int {
-	idx := rloNodeCounter
-	rloNodeCounter++
-	if rloNodeCounter >= 255 {
-		rloNodeCounter = 1
 	}
 	return idx
 }
@@ -99,7 +86,7 @@ func resolveOperand(op string, datablocks []DataBlock) string {
 	return res
 }
 
-func compileSingleContactExpr(el LdElement, datablocks []DataBlock) (string, string) {
+func compileConditionExpr(el LdElement, datablocks []DataBlock) (string, string) {
 	op1 := resolveOperand(el.Operand1, datablocks)
 	op2 := resolveOperand(el.Operand2, datablocks)
 	idx := nextStateIdx()
@@ -132,6 +119,7 @@ func compileSingleContactExpr(el LdElement, datablocks []DataBlock) (string, str
 	}
 }
 
+// Сквозная компиляция LD-блока: каждый основной элемент и каждая параллельная ветка получают уникальный сквозной RLO-индекс
 func compileLDtoC(blockName string, ldJson string, datablocks []DataBlock) string {
 	var ld LdProgramData
 	if err := json.Unmarshal([]byte(ldJson), &ld); err != nil {
@@ -141,40 +129,55 @@ func compileLDtoC(blockName string, ldJson string, datablocks []DataBlock) strin
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("    // === BEGIN LADDER BLOCK [%s] ===\n", blockName))
 
+	// Локальный сквозной счётчик RLO внутри LD-блока (совпадает с assignRloMap во фронтенде)
+	rloSeq := 1
+	nextRlo := func() int {
+		id := rloSeq
+		if rloSeq < 1020 {
+			rloSeq++
+		}
+		return id
+	}
+
 	for rIdx, rung := range ld.Rungs {
 		sb.WriteString(fmt.Sprintf("    // Network %d: %s\n", rIdx+1, rung.Title))
 		sb.WriteString("    {\n        bool rung_flow = true;\n")
 
-		for eIdx, el := range rung.Elements {
+		for _, el := range rung.Elements {
+			mainRloIdx := nextRlo()
+			parRloIndices := make([]int, len(el.Parallel))
+			for pI := range el.Parallel {
+				parRloIndices[pI] = nextRlo()
+			}
+
 			op1 := resolveOperand(el.Operand1, datablocks)
 			op2 := resolveOperand(el.Operand2, datablocks)
 			op3 := resolveOperand(el.Operand3, datablocks)
 			idx := nextStateIdx()
-			rloKey := (rIdx*16 + eIdx + 1) % 255
 
 			switch el.Type {
 			case "NO", "NC", "P_TRIG", "N_TRIG", "CMP_EQ", "CMP_NE", "CMP_GT", "CMP_LT", "CMP_GE", "CMP_LE":
-				preMain, exprMain := compileSingleContactExpr(el, datablocks)
-				var preAll []string
+				sb.WriteString("        {\n            bool _in_flow = rung_flow;\n")
+				preMain, exprMain := compileConditionExpr(el, datablocks)
 				if preMain != "" {
-					preAll = append(preAll, preMain)
+					sb.WriteString("            " + preMain + "\n")
 				}
-				orExprs := []string{exprMain}
+				sb.WriteString(fmt.Sprintf("            bool _m_cond = (%s);\n", exprMain))
+				sb.WriteString(fmt.Sprintf("            bool _m_rlo = _in_flow && _m_cond;\n"))
+				sb.WriteString(fmt.Sprintf("            if (ctx->rlo_status) ctx->rlo_status[%d] = _m_rlo ? 1 : 0;\n", mainRloIdx))
+				sb.WriteString("            bool _branch_any = _m_rlo;\n")
 
-				// Обработка параллельных веток OR (шунтов)
-				for _, par := range el.Parallel {
-					prePar, exprPar := compileSingleContactExpr(par, datablocks)
+				for pI, par := range el.Parallel {
+					prePar, exprPar := compileConditionExpr(par, datablocks)
 					if prePar != "" {
-						preAll = append(preAll, prePar)
+						sb.WriteString("            " + prePar + "\n")
 					}
-					orExprs = append(orExprs, exprPar)
+					sb.WriteString(fmt.Sprintf("            bool _p_rlo_%d = _in_flow && (%s);\n", pI, exprPar))
+					sb.WriteString(fmt.Sprintf("            if (ctx->rlo_status) ctx->rlo_status[%d] = _p_rlo_%d ? 1 : 0;\n", parRloIndices[pI], pI))
+					sb.WriteString(fmt.Sprintf("            _branch_any = _branch_any || _p_rlo_%d;\n", pI))
 				}
-
-				for _, p := range preAll {
-					sb.WriteString("        " + p + "\n")
-				}
-				combinedOr := strings.Join(orExprs, " || ")
-				sb.WriteString(fmt.Sprintf("        rung_flow = rung_flow && (%s);\n", combinedOr))
+				sb.WriteString("            rung_flow = _branch_any;\n        }\n")
+				continue
 
 			case "TON":
 				sb.WriteString(fmt.Sprintf("        if (rung_flow) { if (__ld_timer[%d] < (int32_t)(%s)) __ld_timer[%d] += 10; rung_flow = (__ld_timer[%d] >= (int32_t)(%s)); } else { __ld_timer[%d] = 0; rung_flow = false; }\n", idx, op1, idx, idx, op1, idx))
@@ -230,8 +233,7 @@ func compileLDtoC(blockName string, ldJson string, datablocks []DataBlock) strin
 				}
 			}
 
-			// Сохраняем реальный RLO узла в SHM для 100% точной подсветки в браузере
-			sb.WriteString(fmt.Sprintf("        if (ctx->rlo_status) ctx->rlo_status[%d] = rung_flow ? 1 : 0;\n", rloKey))
+			sb.WriteString(fmt.Sprintf("        if (ctx->rlo_status) ctx->rlo_status[%d] = rung_flow ? 1 : 0;\n", mainRloIdx))
 		}
 		sb.WriteString("    }\n")
 	}
@@ -327,9 +329,9 @@ func main() {
 	sb.WriteString("#include \"plc_abi.h\"\n\n")
 	sb.WriteString("const uint32_t PLC_LOGIC_ABI_VERSION = PLC_ABI_VERSION;\n\n")
 
-	sb.WriteString("static bool    __ld_edge[256]    = {0};\n")
-	sb.WriteString("static int32_t __ld_timer[256]   = {0};\n")
-	sb.WriteString("static int32_t __ld_counter[256] = {0};\n\n")
+	sb.WriteString("static bool    __ld_edge[512]    = {0};\n")
+	sb.WriteString("static int32_t __ld_timer[512]   = {0};\n")
+	sb.WriteString("static int32_t __ld_counter[512] = {0};\n\n")
 
 	for _, db := range proj.Datablocks {
 		sb.WriteString(fmt.Sprintf("// --- DB%d: %s ---\n", db.ID, db.Name))
