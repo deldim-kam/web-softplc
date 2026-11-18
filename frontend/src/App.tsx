@@ -144,6 +144,7 @@ export default function App() {
   const [jitterUs, setJitterUs] = useState(0);
   const [liveData, setLiveData] = useState<LiveDbSnapshot>({});
   const [rloStatus, setRloStatus] = useState<boolean[]>([]);
+  const [compiledRloMap, setCompiledRloMap] = useState<Record<string, number>>({});
   const [speedHistory, setSpeedHistory] = useState<number[]>([]);
 
   const [activeForces, setActiveForces] = useState<Record<string, ForceEntry>>({});
@@ -199,6 +200,16 @@ export default function App() {
     }
   };
 
+  const fetchRloMap = async () => {
+    try {
+      const resp = await fetch('/api/rlo-map');
+      const data = await resp.json();
+      if (data) setCompiledRloMap(data);
+    } catch {
+      // ignore
+    }
+  };
+
   const fetchGeneratedCCode = async () => {
     try {
       const resp = await fetch('/api/generated-c');
@@ -221,6 +232,7 @@ export default function App() {
 
   useEffect(() => {
     fetchGeneratedCCode();
+    fetchRloMap();
     fetchActiveForces();
 
     let isCleaningUp = false;
@@ -319,6 +331,7 @@ export default function App() {
       setDiagnostics(res.diagnostics || []);
       if (res.success) {
         addLog('SUCCESS', res.message);
+        if (res.rloMap) setCompiledRloMap(res.rloMap);
         await fetchGeneratedCCode();
       } else {
         addLog('ERROR', `Ошибка сборки GCC:\n${res.error}`);
@@ -783,6 +796,7 @@ export default function App() {
                 datablocks={project.datablocks}
                 liveData={liveData}
                 rloStatus={rloStatus}
+                compiledRloMap={compiledRloMap}
                 isCoreRunning={coreRunning}
                 activeForces={activeForces}
                 onForceTag={async (fullTag, value, active) => {

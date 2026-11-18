@@ -34,3 +34,4 @@ core/logic.so
 core/softplc.pid
 core/softplc
 backend/bin/
+core/rlo_map.json

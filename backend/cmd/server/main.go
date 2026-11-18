@@ -250,11 +250,26 @@ func handleBuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	rloMap := make(map[string]int)
+	if rBytes, err := os.ReadFile("../core/rlo_map.json"); err == nil {
+		_ = json.Unmarshal(rBytes, &rloMap)
+	}
 	json.NewEncoder(w).Encode(map[string]any{
 		"success":     true,
 		"message":     "Логика скомпилирована и загружена в RT-ядро (Hot Reload).",
 		"diagnostics": []DiagnosticItem{},
+		"rloMap":      rloMap,
 	})
+}
+
+
+func handleRloMap(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	rloMap := make(map[string]int)
+	if rBytes, err := os.ReadFile("../core/rlo_map.json"); err == nil {
+		_ = json.Unmarshal(rBytes, &rloMap)
+	}
+	json.NewEncoder(w).Encode(rloMap)
 }
 
 func handleGeneratedC(w http.ResponseWriter, r *http.Request) {
@@ -422,10 +437,14 @@ func readTelemetryPacket() map[string]any {
 	var scanTimeUs uint32
 	var jitterUs int32
 	var maxJitterUs int32
-	rloList := make([]bool, 1024)
+	const (
+		SysHeaderBytes = 29
+		MaxRloNodes    = 1024
+	)
+	rloList := make([]bool, MaxRloNodes)
 
 	sysBuf, err := os.ReadFile("/dev/shm/softplc_sys_shm")
-	if err == nil && len(sysBuf) >= 1053 {
+	if err == nil && len(sysBuf) >= SysHeaderBytes+MaxRloNodes {
 		cycleTick = binary.LittleEndian.Uint64(sysBuf[0:8])
 		scanTimeUs = binary.LittleEndian.Uint32(sysBuf[16:20])
 		jitterUs = int32(binary.LittleEndian.Uint32(sysBuf[20:24]))
@@ -440,8 +459,8 @@ func readTelemetryPacket() map[string]any {
 			coreRunning = true
 		}
 
-		for i := 0; i < 1024; i++ {
-			rloList[i] = sysBuf[29+i] != 0
+		for i := 0; i < MaxRloNodes; i++ {
+			rloList[i] = sysBuf[SysHeaderBytes+i] != 0
 		}
 	}
 
@@ -521,6 +540,7 @@ func main() {
 	http.HandleFunc("/api/forces", enableCORS(handleGetForces))
 	http.HandleFunc("/api/unforce-all", enableCORS(handleUnforceAll))
 	http.HandleFunc("/api/generated-c", enableCORS(handleGeneratedC))
+	http.HandleFunc("/api/rlo-map", enableCORS(handleRloMap))
 	http.HandleFunc("/ws/live", handleLiveWS)
 
 	log.Println("[Web-SoftPLC Gateway] Listening on :8080 (Dynamic DBs, SHM Force, RLO & Telemetry)")

@@ -12,6 +12,11 @@ import (
 	"strings"
 )
 
+const (
+	MaxRloNodes       = 1024
+	MaxStateInstances = 512
+)
+
 type Variable struct {
 	Name      string `json:"name"`
 	Type      string `json:"type"`
@@ -58,15 +63,29 @@ type Project struct {
 	ProgramBlocks []ProgramBlock `json:"programBlocks"`
 }
 
-var stateInstanceCounter = 0
+var (
+	stateInstanceCounter = 0
+	globalRloSeq         = 1
+	rloMap               = make(map[string]int)
+)
 
-func nextStateIdx() int {
+func nextStateIdx(blockName string) int {
+	if stateInstanceCounter >= MaxStateInstances {
+		log.Fatalf("%s:1:1: error: превышен лимит экземпляров состояний таймеров/фронтов (%d)", blockName, MaxStateInstances)
+	}
 	idx := stateInstanceCounter
 	stateInstanceCounter++
-	if stateInstanceCounter >= 512 {
-		stateInstanceCounter = 0
-	}
 	return idx
+}
+
+func allocRloSlot(blockName, elemID string) int {
+	if globalRloSeq >= MaxRloNodes {
+		log.Fatalf("%s:1:1: error: превышен лимит узлов мониторинга RLO (%d)", blockName, MaxRloNodes)
+	}
+	slot := globalRloSeq
+	globalRloSeq++
+	rloMap[fmt.Sprintf("%s:%s", blockName, elemID)] = slot
+	return slot
 }
 
 func resolveOperand(op string, datablocks []DataBlock) string {
@@ -86,10 +105,10 @@ func resolveOperand(op string, datablocks []DataBlock) string {
 	return res
 }
 
-func compileConditionExpr(el LdElement, datablocks []DataBlock) (string, string) {
+func compileConditionExpr(blockName string, el LdElement, datablocks []DataBlock) (string, string) {
 	op1 := resolveOperand(el.Operand1, datablocks)
 	op2 := resolveOperand(el.Operand2, datablocks)
-	idx := nextStateIdx()
+	idx := nextStateIdx(blockName)
 
 	switch el.Type {
 	case "NO":
@@ -119,56 +138,45 @@ func compileConditionExpr(el LdElement, datablocks []DataBlock) (string, string)
 	}
 }
 
-// Сквозная компиляция LD-блока: каждый основной элемент и каждая параллельная ветка получают уникальный сквозной RLO-индекс
 func compileLDtoC(blockName string, ldJson string, datablocks []DataBlock) string {
 	var ld LdProgramData
 	if err := json.Unmarshal([]byte(ldJson), &ld); err != nil {
-		return fmt.Sprintf("    // [LD PARSE ERROR in %s]: %v\n", blockName, err)
+		log.Fatalf("%s:1:1: error: ошибка разбора JSON-структуры LD: %v", blockName, err)
 	}
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("    // === BEGIN LADDER BLOCK [%s] ===\n", blockName))
-
-	// Локальный сквозной счётчик RLO внутри LD-блока (совпадает с assignRloMap во фронтенде)
-	rloSeq := 1
-	nextRlo := func() int {
-		id := rloSeq
-		if rloSeq < 1020 {
-			rloSeq++
-		}
-		return id
-	}
 
 	for rIdx, rung := range ld.Rungs {
 		sb.WriteString(fmt.Sprintf("    // Network %d: %s\n", rIdx+1, rung.Title))
 		sb.WriteString("    {\n        bool rung_flow = true;\n")
 
 		for _, el := range rung.Elements {
-			mainRloIdx := nextRlo()
+			mainRloIdx := allocRloSlot(blockName, el.ID)
 			parRloIndices := make([]int, len(el.Parallel))
-			for pI := range el.Parallel {
-				parRloIndices[pI] = nextRlo()
+			for pI, par := range el.Parallel {
+				parRloIndices[pI] = allocRloSlot(blockName, par.ID)
 			}
 
 			op1 := resolveOperand(el.Operand1, datablocks)
 			op2 := resolveOperand(el.Operand2, datablocks)
 			op3 := resolveOperand(el.Operand3, datablocks)
-			idx := nextStateIdx()
+			idx := nextStateIdx(blockName)
 
 			switch el.Type {
 			case "NO", "NC", "P_TRIG", "N_TRIG", "CMP_EQ", "CMP_NE", "CMP_GT", "CMP_LT", "CMP_GE", "CMP_LE":
 				sb.WriteString("        {\n            bool _in_flow = rung_flow;\n")
-				preMain, exprMain := compileConditionExpr(el, datablocks)
+				preMain, exprMain := compileConditionExpr(blockName, el, datablocks)
 				if preMain != "" {
 					sb.WriteString("            " + preMain + "\n")
 				}
 				sb.WriteString(fmt.Sprintf("            bool _m_cond = (%s);\n", exprMain))
-				sb.WriteString(fmt.Sprintf("            bool _m_rlo = _in_flow && _m_cond;\n"))
+				sb.WriteString("            bool _m_rlo = _in_flow && _m_cond;\n")
 				sb.WriteString(fmt.Sprintf("            if (ctx->rlo_status) ctx->rlo_status[%d] = _m_rlo ? 1 : 0;\n", mainRloIdx))
 				sb.WriteString("            bool _branch_any = _m_rlo;\n")
 
 				for pI, par := range el.Parallel {
-					prePar, exprPar := compileConditionExpr(par, datablocks)
+					prePar, exprPar := compileConditionExpr(blockName, par, datablocks)
 					if prePar != "" {
 						sb.WriteString("            " + prePar + "\n")
 					}
@@ -243,7 +251,7 @@ func compileLDtoC(blockName string, ldJson string, datablocks []DataBlock) strin
 
 func compileBlockToC(pb ProgramBlock, programBlocks []ProgramBlock, datablocks []DataBlock, depth int) string {
 	if depth > 10 {
-		return "// [WARNING] Max inline depth reached\n"
+		log.Fatalf("%s:1:1: error: превышена глубина вложенности вызовов FC/FB (рекурсия)", pb.Name)
 	}
 
 	if pb.Language == "LD" {
@@ -329,9 +337,9 @@ func main() {
 	sb.WriteString("#include \"plc_abi.h\"\n\n")
 	sb.WriteString("const uint32_t PLC_LOGIC_ABI_VERSION = PLC_ABI_VERSION;\n\n")
 
-	sb.WriteString("static bool    __ld_edge[512]    = {0};\n")
-	sb.WriteString("static int32_t __ld_timer[512]   = {0};\n")
-	sb.WriteString("static int32_t __ld_counter[512] = {0};\n\n")
+	sb.WriteString(fmt.Sprintf("static bool    __ld_edge[%d]    = {0};\n", MaxStateInstances))
+	sb.WriteString(fmt.Sprintf("static int32_t __ld_timer[%d]   = {0};\n", MaxStateInstances))
+	sb.WriteString(fmt.Sprintf("static int32_t __ld_counter[%d] = {0};\n\n", MaxStateInstances))
 
 	for _, db := range proj.Datablocks {
 		sb.WriteString(fmt.Sprintf("// --- DB%d: %s ---\n", db.ID, db.Name))
@@ -403,14 +411,19 @@ func main() {
 
 	cFilePath := filepath.Join(*outDir, "logic.c")
 	soFilePath := filepath.Join(*outDir, "logic.so")
+	rloMapPath := filepath.Join(*outDir, "rlo_map.json")
 
 	if err := os.WriteFile(cFilePath, []byte(sb.String()), 0644); err != nil {
 		log.Fatalf("Write logic.c error: %v", err)
+	}
+
+	if rloBytes, err := json.MarshalIndent(rloMap, "", "  "); err == nil {
+		_ = os.WriteFile(rloMapPath, rloBytes, 0644)
 	}
 
 	gccCmd := exec.Command("gcc", "-O2", "-shared", "-fPIC", "-I"+*includeDir, cFilePath, "-o", soFilePath)
 	if out, err := gccCmd.CombinedOutput(); err != nil {
 		log.Fatalf("GCC error:\n%s", string(out))
 	}
-	fmt.Println("Compiled ST+LD logic.so successfully.")
+	fmt.Println("Compiled ST+LD logic.so and rlo_map.json successfully.")
 }
