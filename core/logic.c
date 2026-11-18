@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include "plc_abi.h"
 
+const uint32_t PLC_LOGIC_ABI_VERSION = PLC_ABI_VERSION;
+
 // --- DB1: Line_Params ---
 typedef struct __attribute__((packed)) {
     float Target_Speed;
@@ -11,16 +13,26 @@ typedef struct __attribute__((packed)) {
     int16_t Error_Code;
 } DB1_t;
 
-
-void plc_logic_init(void) {}
+static bool g_db_initialized = false;
 
 void plc_logic_step(PlcContext *ctx) {
     if (!ctx || !ctx->get_db) return;
 
-    DB1_t *db1 = (DB1_t *)ctx->get_db(1);
-    if (!db1) return;
+    PlcDataBlock *raw_db1 = ctx->get_db(1);
+    if (!raw_db1 || !raw_db1->ptr) return;
+    DB1_t *db1 = (DB1_t *)raw_db1->ptr;
 
-    // --- 1. MONOLITHIC PLC SCAN CYCLE (OB1 + INLINED FC/FB) ---
+    if (!g_db_initialized) {
+        db1->Target_Speed = 1500.0;
+        db1->Line_Enable = 1;
+        db1->Error_Code = 0;
+        g_db_initialized = true;
+    }
+
+    // --- PRE-SCAN FORCE OVERRIDE ---
+    db1->Target_Speed = 4000; // [FORCED INPUT]
+
+    // --- MONOLITHIC PLC SCAN CYCLE (OB1 + INLINED FC/FB) ---
 // OB1: Главный циклический блок управления (10 мс)
 if (db1->Line_Enable) {
     db1->Target_Speed = 3500.0;
@@ -37,8 +49,4 @@ if (db1->Line_Enable) {
 } else {
     db1->Target_Speed = 0.0;
 }
-
-    // --- 2. HARDWARE FORCE OVERRIDE (END OF SCAN) ---
-    db1->Line_Enable = 1; // [FORCED]
-    db1->Target_Speed = 1500; // [FORCED]
 }

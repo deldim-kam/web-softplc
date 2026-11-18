@@ -25,3 +25,12 @@ backend/bin/
 backend/client.go
 frontend/dist/
 frontend/node_modules/
+
+# Временные файлы рантайма и компиляции
+core/temp_project.json
+core/force_state.json
+core/logic.c
+core/logic.so
+core/softplc.pid
+core/softplc
+backend/bin/

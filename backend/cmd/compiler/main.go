@@ -27,7 +27,7 @@ type DataBlock struct {
 
 type ProgramBlock struct {
 	ID        int    `json:"id"`
-	BlockType string `json:"blockType"` // OB, FB, FC
+	BlockType string `json:"blockType"`
 	Name      string `json:"name"`
 	Language  string `json:"language"`
 	Code      string `json:"code"`
@@ -44,18 +44,16 @@ type ForceEntry struct {
 	Value  string `json:"value"`
 }
 
-// Разворачивание вызовов FC и FB в единое полотно ST (Inlining)
 func inlineBlocks(stCode string, programBlocks []ProgramBlock, depth int) string {
 	if depth > 10 {
-		return "// [WARNING] Превышена глубина вложенности вызовов FC/FB\n" + stCode
+		return "// [WARNING] Max inline depth reached\n" + stCode
 	}
-
 	lines := strings.Split(stCode, "\n")
 	var expandedLines []string
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "//") {
+		if strings.HasPrefix(trimmed, "//") || trimmed == "" {
 			expandedLines = append(expandedLines, line)
 			continue
 		}
@@ -63,8 +61,10 @@ func inlineBlocks(stCode string, programBlocks []ProgramBlock, depth int) string
 		replaced := false
 		for _, pb := range programBlocks {
 			if pb.BlockType == "FC" || pb.BlockType == "FB" {
-				reCall := regexp.MustCompile(fmt.Sprintf(`(?i)^(?:"%s"|%s)\s*\(.*?\)\s*;?$`, regexp.QuoteMeta(pb.Name), regexp.QuoteMeta(pb.Name)))
-				if reCall.MatchString(trimmed) {
+				callWithQuotes := fmt.Sprintf(`"%s"(`, pb.Name)
+				callPlain := fmt.Sprintf(`%s(`, pb.Name)
+
+				if strings.Contains(trimmed, callWithQuotes) || strings.HasPrefix(trimmed, callPlain) {
 					expandedLines = append(expandedLines, fmt.Sprintf("    // >>> INLINE EXPAND [%s: %s] >>>", pb.BlockType, pb.Name))
 					expandedLines = append(expandedLines, "    {")
 					innerCode := inlineBlocks(pb.Code, programBlocks, depth+1)
@@ -83,11 +83,9 @@ func inlineBlocks(stCode string, programBlocks []ProgramBlock, depth int) string
 			expandedLines = append(expandedLines, line)
 		}
 	}
-
 	return strings.Join(expandedLines, "\n")
 }
 
-// Трансляция единого полотна ST в чистый C
 func translateMonolithicSTtoC(stCode string, datablocks []DataBlock) string {
 	lines := strings.Split(stCode, "\n")
 	var cLines []string
@@ -105,43 +103,38 @@ func translateMonolithicSTtoC(stCode string, datablocks []DataBlock) string {
 		}
 
 		rLine := line
-
-		// Замена обращений ко всем DB: "Line_Params".Var -> db1->Var
 		for _, db := range datablocks {
 			rLine = strings.ReplaceAll(rLine, fmt.Sprintf(`"%s".`, db.Name), fmt.Sprintf("db%d->", db.ID))
 		}
 
-		// Управляющие конструкции IEC ST
 		rLine = reIfThen.ReplaceAllString(rLine, "if ($1) {")
 		rLine = reElsif.ReplaceAllString(rLine, "} else if ($1) {")
 		rLine = reElse.ReplaceAllString(rLine, "} else {")
 		rLine = reEndIf.ReplaceAllString(rLine, "}")
 
-		// Операторы присваивания и константы
 		rLine = strings.ReplaceAll(rLine, ":=", "=")
 		rLine = regexp.MustCompile(`(?i)\bTRUE\b`).ReplaceAllString(rLine, "1")
 		rLine = regexp.MustCompile(`(?i)\bFALSE\b`).ReplaceAllString(rLine, "0")
 
 		cLines = append(cLines, rLine)
 	}
-
 	return strings.Join(cLines, "\n")
 }
 
 func main() {
-	projectPath := flag.String("project", "../core/temp_project.json", "Путь к JSON проекта")
-	includeDir := flag.String("include", "../core/include", "Путь к заголовочным файлам core")
-	outDir := flag.String("out", "../core", "Каталог вывода logic.so")
+	projectPath := flag.String("project", "../core/temp_project.json", "JSON project path")
+	includeDir := flag.String("include", "../core/include", "Core include dir")
+	outDir := flag.String("out", "../core", "Output dir")
 	flag.Parse()
 
 	data, err := os.ReadFile(*projectPath)
 	if err != nil {
-		log.Fatalf("Ошибка чтения проекта: %v", err)
+		log.Fatalf("Read project error: %v", err)
 	}
 
 	var proj Project
 	if err := json.Unmarshal(data, &proj); err != nil {
-		log.Fatalf("Ошибка парсинга проекта: %v", err)
+		log.Fatalf("Parse project error: %v", err)
 	}
 
 	forces := make(map[string]ForceEntry)
@@ -152,8 +145,8 @@ func main() {
 	var sb strings.Builder
 	sb.WriteString("#include <stdint.h>\n#include <stdbool.h>\n#include <math.h>\n#include <stdio.h>\n")
 	sb.WriteString("#include \"plc_abi.h\"\n\n")
+	sb.WriteString("const uint32_t PLC_LOGIC_ABI_VERSION = PLC_ABI_VERSION;\n\n")
 
-	// 1. Структуры Data Blocks
 	for _, db := range proj.Datablocks {
 		sb.WriteString(fmt.Sprintf("// --- DB%d: %s ---\n", db.ID, db.Name))
 		sb.WriteString("typedef struct __attribute__((packed)) {\n")
@@ -176,7 +169,6 @@ func main() {
 		sb.WriteString(fmt.Sprintf("} DB%d_t;\n\n", db.ID))
 	}
 
-	// 2. Разворачивание главного цикла OB1
 	var ob1Code string
 	for _, pb := range proj.ProgramBlocks {
 		if pb.BlockType == "OB" {
@@ -188,21 +180,35 @@ func main() {
 	monolithicST := inlineBlocks(ob1Code, proj.ProgramBlocks, 0)
 	monolithicC := translateMonolithicSTtoC(monolithicST, proj.Datablocks)
 
-	// 3. Точка входа RT-ядра с правильным получением указателя через ctx->get_db(1)
-	sb.WriteString(`
-void plc_logic_init(void) {}
+	sb.WriteString("static bool g_db_initialized = false;\n\n")
+	sb.WriteString("void plc_logic_step(PlcContext *ctx) {\n")
+	sb.WriteString("    if (!ctx || !ctx->get_db) return;\n\n")
 
-void plc_logic_step(PlcContext *ctx) {
-    if (!ctx || !ctx->get_db) return;
+	// Разыменование всех DB через raw_db->ptr
+	for _, db := range proj.Datablocks {
+		sb.WriteString(fmt.Sprintf("    PlcDataBlock *raw_db%d = ctx->get_db(%d);\n", db.ID, db.ID))
+		sb.WriteString(fmt.Sprintf("    if (!raw_db%d || !raw_db%d->ptr) return;\n", db.ID, db.ID))
+		sb.WriteString(fmt.Sprintf("    DB%d_t *db%d = (DB%d_t *)raw_db%d->ptr;\n\n", db.ID, db.ID, db.ID, db.ID))
+	}
 
-    DB1_t *db1 = (DB1_t *)ctx->get_db(1);
-    if (!db1) return;
+	// 1. Однократная инициализация начальных значений всех DB
+	sb.WriteString("    if (!g_db_initialized) {\n")
+	for _, db := range proj.Datablocks {
+		for _, v := range db.Variables {
+			initVal := strings.TrimSpace(v.InitValue)
+			if initVal == "true" || initVal == "TRUE" {
+				initVal = "1"
+			} else if initVal == "false" || initVal == "FALSE" || initVal == "" {
+				initVal = "0"
+			}
+			sb.WriteString(fmt.Sprintf("        db%d->%s = %s;\n", db.ID, v.Name, initVal))
+		}
+	}
+	sb.WriteString("        g_db_initialized = true;\n")
+	sb.WriteString("    }\n\n")
 
-    // --- 1. MONOLITHIC PLC SCAN CYCLE (OB1 + INLINED FC/FB) ---
-`)
-	sb.WriteString(monolithicC)
-
-	sb.WriteString("\n\n    // --- 2. HARDWARE FORCE OVERRIDE (END OF SCAN) ---\n")
+	// 2. PRE-SCAN FORCE OVERRIDE (Подача форсированных значений на вход цикла до логики)
+	sb.WriteString("    // --- PRE-SCAN FORCE OVERRIDE ---\n")
 	for varName, entry := range forces {
 		if entry.Active {
 			val := entry.Value
@@ -211,24 +217,25 @@ void plc_logic_step(PlcContext *ctx) {
 			} else if val == "false" || val == "FALSE" {
 				val = "0"
 			}
-			sb.WriteString(fmt.Sprintf("    db1->%s = %s; // [FORCED]\n", varName, val))
+			sb.WriteString(fmt.Sprintf("    db1->%s = %s; // [FORCED INPUT]\n", varName, val))
 		}
 	}
 
-	sb.WriteString("}\n")
+	// 3. Выполнение логики OB1 + инлайн FC/FB
+	sb.WriteString("\n    // --- MONOLITHIC PLC SCAN CYCLE (OB1 + INLINED FC/FB) ---\n")
+	sb.WriteString(monolithicC)
+	sb.WriteString("\n}\n")
 
 	cFilePath := filepath.Join(*outDir, "logic.c")
 	soFilePath := filepath.Join(*outDir, "logic.so")
 
 	if err := os.WriteFile(cFilePath, []byte(sb.String()), 0644); err != nil {
-		log.Fatalf("Ошибка записи logic.c: %v", err)
+		log.Fatalf("Write logic.c error: %v", err)
 	}
 
 	gccCmd := exec.Command("gcc", "-O2", "-shared", "-fPIC", "-I"+*includeDir, cFilePath, "-o", soFilePath)
-	out, err := gccCmd.CombinedOutput()
-	if err != nil {
-		log.Fatalf("Ошибка сборки GCC: %v\nВывод: %s", err, string(out))
+	if out, err := gccCmd.CombinedOutput(); err != nil {
+		log.Fatalf("GCC error: %v\n%s", err, string(out))
 	}
-
-	fmt.Println("logic.so успешно скомпилирован под ABI PlcContext.")
+	fmt.Println("Compiled logic.so successfully.")
 }

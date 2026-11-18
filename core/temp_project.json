@@ -1,56 +1,35 @@
 {
+  "projectName": "Conveyor_Control",
+  "version": "1.0.0",
+  "target": { "arch": "x86_64", "cycleTimeMs": 10 },
   "datablocks": [
     {
       "id": 1,
       "name": "Line_Params",
       "type": "global",
       "variables": [
-        {
-          "comment": "Заданная скорость (об/мин)",
-          "initValue": "1500.0",
-          "name": "Target_Speed",
-          "retain": false,
-          "type": "REAL"
-        },
-        {
-          "comment": "Разрешение работы линии",
-          "initValue": "true",
-          "name": "Line_Enable",
-          "retain": false,
-          "type": "BOOL"
-        },
-        {
-          "comment": "Код аварийной остановки",
-          "initValue": "0",
-          "name": "Error_Code",
-          "retain": true,
-          "type": "INT"
-        }
+        { "name": "Target_Speed", "type": "REAL", "initValue": "1500.0", "retain": false, "comment": "Заданная скорость (об/мин)" },
+        { "name": "Line_Enable", "type": "BOOL", "initValue": "true", "retain": false, "comment": "Разрешение работы линии" },
+        { "name": "Error_Code", "type": "INT", "initValue": "0", "retain": true, "comment": "Код аварийной остановки" }
       ]
     }
   ],
   "programBlocks": [
     {
-      "blockType": "OB",
-      "code": "// OB1: Главный циклический блок управления (10 мс)\nIF \"Line_Params\".Line_Enable THEN\n    \"Line_Params\".Target_Speed := 3500.0;\n    // Вызов функции FC1 для ограничения предельной скорости\n    \"FC1_SpeedLimiter\"();\nELSE\n    \"Line_Params\".Target_Speed := 0.0;\nEND_IF;",
       "id": 1,
-      "language": "ST",
+      "blockType": "OB",
       "name": "OB1_Main",
-      "title": "Main Cyclic Organization Block"
+      "language": "ST",
+      "title": "Main Cyclic Organization Block",
+      "code": "// OB1: Главный циклический блок управления (10 мс)\nIF \"Line_Params\".Line_Enable THEN\n    \"Line_Params\".Target_Speed := 3500.0;\n    // Вызов функции FC1 для ограничения предельной скорости\n    \"FC1_SpeedLimiter\"();\nELSE\n    \"Line_Params\".Target_Speed := 0.0;\nEND_IF;"
     },
     {
-      "blockType": "FC",
-      "code": "// FC1: Функция защиты по превышению скорости\nIF \"Line_Params\".Target_Speed \u003e 3000.0 THEN\n    \"Line_Params\".Target_Speed := 3000.0;\n    \"Line_Params\".Error_Code := 101;\nEND_IF;",
       "id": 1,
-      "language": "ST",
+      "blockType": "FC",
       "name": "FC1_SpeedLimiter",
-      "title": "Ограничитель предельной скорости"
+      "language": "ST",
+      "title": "Ограничитель предельной скорости",
+      "code": "// FC1: Функция защиты по превышению скорости\nIF \"Line_Params\".Target_Speed > 3000.0 THEN\n    \"Line_Params\".Target_Speed := 3000.0;\n    \"Line_Params\".Error_Code := 101;\nEND_IF;"
     }
-  ],
-  "projectName": "Conveyor_Control",
-  "target": {
-    "arch": "x86_64",
-    "cycleTimeMs": 10
-  },
-  "version": "1.0.0"
+  ]
 }

@@ -133,7 +133,7 @@ type ForceRequest struct {
 	DbID     int    `json:"dbId"`
 	VarName  string `json:"varName"`
 	ValueStr string `json:"value"`
-	Active   bool   `json:"active"` // true = включить Force, false = снять Force (Unforce)
+	Active   bool   `json:"active"`
 }
 
 func loadForces() map[string]ForceEntry {
@@ -168,26 +168,21 @@ func handleForce(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cleanVal := strings.TrimSpace(cleanVal)
+	cleanVal := strings.TrimSpace(req.ValueStr)
+	forces := loadForces()
+
 	if req.Active {
-		// Очищаем ведущие нули (чтобы 01500 не превращалось в восьмеричный литерал Си)
 		if cleanVal != "true" && cleanVal != "false" && cleanVal != "TRUE" && cleanVal != "FALSE" {
 			if fVal, err := strconv.ParseFloat(cleanVal, 64); err == nil {
 				cleanVal = strconv.FormatFloat(fVal, 'f', -1, 64)
 			}
 		}
-		forces := loadForces()
 		forces[req.VarName] = ForceEntry{Active: true, Value: cleanVal}
-		saveForces(forces)
 	} else {
-		forces := loadForces()
 		delete(forces, req.VarName)
-		saveForces(forces)
 	}
+	saveForces(forces)
 
-	forces := loadForces()
-
-	// Перекомпилируем логику с учётом обновления маски Force и делаем Hot Reload
 	if out, err := runCompileAndReload(); err != nil {
 		json.NewEncoder(w).Encode(map[string]any{
 			"success": false,
@@ -235,7 +230,7 @@ func handleLiveWS(w http.ResponseWriter, r *http.Request) {
 func readLiveShm() map[string]any {
 	shmPath := "/dev/shm/softplc_db1_shm"
 	buf, err := os.ReadFile(shmPath)
-	if err != nil || len(buf) < 8 {
+	if err != nil || len(buf) < 7 {
 		return map[string]any{
 			"Target_Speed": 0.0,
 			"Line_Enable":  false,
@@ -243,10 +238,14 @@ func readLiveShm() map[string]any {
 		}
 	}
 
+	// Раскладка __attribute__((packed)) DB1_t:
+	// [0..3] float Target_Speed (4 байта)
+	// [4]    uint8_t Line_Enable (1 байт)
+	// [5..6] int16_t Error_Code (2 байта)
 	bits := binary.LittleEndian.Uint32(buf[0:4])
 	speed := math.Float32frombits(bits)
 	enable := buf[4] != 0
-	errorCode := int16(binary.LittleEndian.Uint16(buf[6:8]))
+	errorCode := int16(binary.LittleEndian.Uint16(buf[5:7]))
 
 	return map[string]any{
 		"Target_Speed": math.Round(float64(speed)*10) / 10,
@@ -300,7 +299,7 @@ func main() {
 	http.HandleFunc("/api/generated-c", enableCORS(handleGeneratedC))
 	http.HandleFunc("/ws/live", handleLiveWS)
 
-	log.Println("[Web-SoftPLC Gateway] Сервер слушает :8080 (Force Override & C-Viewer active)")
+	log.Println("[Web-SoftPLC Gateway] Сервер слушает :8080 (Packed SHM & Pre-Scan Force active)")
 	if err := http.ListenAndServe(":8080", nil); err != nil {
 		log.Fatalf("Fatal: %v", err)
 	}

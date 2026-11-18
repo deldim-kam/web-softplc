@@ -6,11 +6,23 @@
 
 static _Atomic(PlcLogicStepFn) g_active_step_fn = NULL;
 static void *g_current_handle = NULL;
+static uint32_t g_load_generation = 0;
 
 bool logic_load_module(const char *so_path) {
-    printf("[Loader] Загрузка модуля логики: %s\n", so_path);
+    g_load_generation++;
+    char temp_so_path[256];
+    snprintf(temp_so_path, sizeof(temp_so_path), "/tmp/softplc_logic_gen_%u.so", g_load_generation);
 
-    void *new_handle = dlopen(so_path, RTLD_NOW);
+    char cmd[512];
+    snprintf(cmd, sizeof(cmd), "cp %s %s", so_path, temp_so_path);
+    if (system(cmd) != 0) {
+        fprintf(stderr, "[Loader] Ошибка копирования %s в %s\n", so_path, temp_so_path);
+        return false;
+    }
+
+    printf("[Loader] Загрузка модуля логики (gen %u): %s\n", g_load_generation, temp_so_path);
+
+    void *new_handle = dlopen(temp_so_path, RTLD_NOW);
     if (!new_handle) {
         fprintf(stderr, "[Loader] Ошибка dlopen: %s\n", dlerror());
         return false;
@@ -36,7 +48,6 @@ bool logic_load_module(const char *so_path) {
 
     if (old_handle) {
         dlclose(old_handle);
-        printf("[Loader] Предыдущая версия выгружена.\n");
     }
 
     printf("[Loader] Логика успешно обновлена на лету!\n");

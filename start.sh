@@ -1,97 +1,25 @@
-#!/usr/bin/env bash
-
+#!/bin/bash
 set -e
 
-PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CORE_DIR="$PROJECT_ROOT/core"
-BACKEND_DIR="$PROJECT_ROOT/backend"
-FRONTEND_DIR="$PROJECT_ROOT/frontend"
+ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Цветовая разметка вывода
-C_CORE="\033[0;36m[CORE]\033[0m"
-C_GATEWAY="\033[0;32m[GATEWAY]\033[0m"
-C_VITE="\033[0;35m[VITE]\033[0m"
-C_SYS="\033[1;33m[SYSTEM]\033[0m"
+echo "[1/3] Запуск RT-ядра SoftPLC (из папки core)..."
+cd "$ROOT_DIR/core"
+./softplc ./logic.so &
+CORE_PID=$!
+echo "      Core запущен, PID: $CORE_PID"
 
-echo -e "$C_SYS Инициализация Web-SoftPLC IDE..."
+sleep 0.5
 
-# 1. Проверка и сборка ядра C
-if [ ! -f "$CORE_DIR/softplc" ]; then
-    echo -e "$C_SYS Бинарник softplc не найден. Сборка ядра..."
-    make -C "$CORE_DIR"
-fi
+echo "[2/3] Запуск Go Gateway (:8080)..."
+cd "$ROOT_DIR/backend"
+./bin/softplc-server &
+GW_PID=$!
 
-# 2. Проверка начальной библиотеки logic.so
-if [ ! -f "$CORE_DIR/logic.so" ]; then
-    echo -e "$C_SYS logic.so не найден. Сборка через softplc-compiler..."
-    if [ ! -f "$BACKEND_DIR/bin/softplc-compiler" ]; then
-        cd "$BACKEND_DIR" && go build -o bin/softplc-compiler cmd/compiler/main.go && cd "$PROJECT_ROOT"
-    fi
-    "$BACKEND_DIR/bin/softplc-compiler" \
-      -project="$PROJECT_ROOT/contracts/sample_project.json" \
-      -include="$CORE_DIR/include" \
-      -out="$CORE_DIR"
-fi
+echo "[3/3] Запуск Frontend (Vite :5173)..."
+cd "$ROOT_DIR/frontend"
+npm run dev -- --host &
+FE_PID=$!
 
-# 3. Проверка и сборка Go Gateway сервера
-if [ ! -f "$BACKEND_DIR/bin/softplc-server" ]; then
-    echo -e "$C_SYS Бинарник softplc-server не найден. Сборка Go-сервера..."
-    cd "$BACKEND_DIR" && go build -o bin/softplc-server cmd/server/main.go && cd "$PROJECT_ROOT"
-fi
-
-# Массив для хранения PID дочерних процессов
-PIDS=()
-
-# Функция корректной остановки всех подсистем
-cleanup() {
-    echo ""
-    echo -e "$C_SYS Получен сигнал остановки (Ctrl+C). Завершение процессов..."
-
-    for pid in "${PIDS[@]}"; do
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -SIGTERM "$pid" 2>/dev/null || true
-        fi
-    done
-
-    # Даем процессам время на корректный flush и unmap памяти
-    sleep 0.5
-
-    # Принудительная зачистка PID-файла, если процесс не успел удалить сам
-    rm -f "$CORE_DIR/softplc.pid"
-
-    echo -e "$C_SYS Все службы успешно остановлены."
-    exit 0
-}
-
-# Перехват сигналов SIGINT (Ctrl+C) и SIGTERM
-trap cleanup SIGINT SIGTERM EXIT
-
-# 4. Запуск ядра SoftPLC
-echo -e "$C_SYS Запуск RT-ядра SoftPLC..."
-cd "$CORE_DIR"
-./softplc ./logic.so 2>&1 | sed "s/^/$C_CORE /" &
-PIDS+=($!)
-
-# Небольшая пауза, чтобы ядро успело зарегистрировать SHM и сохранить softplc.pid
-sleep 0.4
-
-# 5. Запуск Go Gateway (REST API + WebSocket)
-echo -e "$C_SYS Запуск Go Gateway сервера (:8080)..."
-cd "$BACKEND_DIR"
-./bin/softplc-server 2>&1 | sed "s/^/$C_GATEWAY /" &
-PIDS+=($!)
-
-sleep 0.4
-
-# 6. Запуск фронтенда Vite
-echo -e "$C_SYS Запуск фронтенда Vite (:5173)..."
-cd "$FRONTEND_DIR"
-npm run dev -- --host 2>&1 | sed "s/^/$C_VITE /" &
-PIDS+=($!)
-
-echo -e "$C_SYS Комплекс запущен!"
-echo -e "$C_SYS Веб-интерфейс: http://localhost:5173"
-echo -e "$C_SYS Для остановки всех модулей нажмите Ctrl+C"
-
-# Ожидание завершения дочерних процессов
+trap "kill -9 $CORE_PID $GW_PID $FE_PID 2>/dev/null; exit 0" SIGINT SIGTERM
 wait
