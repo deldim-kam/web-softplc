@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import type { Project, ProgramBlock, DataBlock, LiveDbSnapshot } from './types/plc';
 import { DbEditor } from './components/DbEditor';
 import type { ForceEntry } from './components/DbEditor';
@@ -20,7 +20,9 @@ import {
   Terminal,
   Plus,
   Trash2,
-  Zap
+  Zap,
+  Download,
+  Upload
 } from 'lucide-react';
 
 interface LogEntry {
@@ -79,6 +81,7 @@ export default function App() {
   ]);
   const [isConsoleOpen, setIsConsoleOpen] = useState(false);
   const logEndRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [activeTab, setActiveTab] = useState<{ type: 'DB' | 'PROG' | 'C_OUT'; id: number; blockType?: string }>({
     type: 'PROG',
@@ -180,6 +183,58 @@ export default function App() {
     }
   };
 
+  // Экспорт проекта в JSON-файл на диск пользователя
+  const handleExportProject = () => {
+    try {
+      const jsonString = JSON.stringify(project, null, 2);
+      const blob = new Blob([jsonString], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const safeName = project.projectName.replace(/[^a-zA-Z0-9_-]/g, '_') || 'softplc_project';
+      a.href = url;
+      a.download = `${safeName}.plc.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      addLog('SUCCESS', `Проект экспортирован в файл: ${safeName}.plc.json`);
+    } catch (err: any) {
+      addLog('ERROR', `Ошибка экспорта проекта: ${err.message}`);
+    }
+  };
+
+  // Импорт проекта из JSON-файла с диска пользователя
+  const handleImportProject = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const content = event.target?.result as string;
+        const parsed = JSON.parse(content) as Project;
+
+        if (!parsed.datablocks || !parsed.programBlocks) {
+          throw new Error('Некорректная структура файла проекта (отсутствуют datablocks или programBlocks)');
+        }
+
+        setProject(parsed);
+        if (parsed.programBlocks.length > 0) {
+          const first = parsed.programBlocks[0];
+          setActiveTab({ type: 'PROG', id: first.id, blockType: first.blockType });
+        }
+        addLog('SUCCESS', `Проект "${parsed.projectName}" успешно загружен из файла ${file.name}`);
+      } catch (err: any) {
+        addLog('ERROR', `Ошибка чтения файла проекта: ${err.message}`);
+      } finally {
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+      }
+    };
+    reader.readAsText(file);
+  };
+
   const handleAddProgramBlock = (block: { type: 'OB' | 'FB' | 'FC'; number: number; name: string }) => {
     const newBlock: ProgramBlock = {
       id: block.number,
@@ -223,6 +278,15 @@ export default function App() {
 
   return (
     <div className="flex flex-col h-screen w-screen select-none bg-[#1e1e1e] text-[#cccccc]">
+      {/* Скрытый input для выбора файла при импорте */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".json,.plc.json"
+        onChange={handleImportProject}
+        className="hidden"
+      />
+
       {/* 1. Верхний Command Bar */}
       <header className="h-10 bg-[#2d2d30] border-b border-[#3e3e42] px-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -232,7 +296,14 @@ export default function App() {
             <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[#3e3e42] text-[#858585]">Monolithic RT</span>
           </div>
           <span className="text-[#555555]">|</span>
-          <span className="text-xs text-[#999999]">{project.projectName} ({project.target.cycleTimeMs} ms RT-cycle)</span>
+          <input
+            type="text"
+            value={project.projectName}
+            onChange={(e) => setProject({ ...project, projectName: e.target.value })}
+            className="bg-transparent hover:bg-[#3e3e42] focus:bg-[#1e1e1e] px-1.5 py-0.5 rounded text-xs text-[#e1e1e1] font-mono outline-none border border-transparent focus:border-[#007acc]"
+            title="Имя проекта (кликните для переименования)"
+          />
+          <span className="text-xs text-[#777777]">({project.target.cycleTimeMs} ms)</span>
 
           {activeForceCount > 0 && (
             <span className="flex items-center gap-1 px-2 py-0.5 rounded bg-amber-600/30 border border-amber-500 text-amber-300 text-[11px] font-mono animate-pulse">
@@ -241,7 +312,28 @@ export default function App() {
           )}
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2">
+          {/* Кнопки управления файлом проекта (Import / Export JSON) */}
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-mono bg-[#252526] text-[#cccccc] border border-[#3e3e42] hover:border-[#666666] hover:text-white transition"
+            title="Загрузить проект с диска (.json)"
+          >
+            <Upload size={13} className="text-[#4ec9b0]" />
+            <span>Open</span>
+          </button>
+
+          <button
+            onClick={handleExportProject}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-mono bg-[#252526] text-[#cccccc] border border-[#3e3e42] hover:border-[#666666] hover:text-white transition"
+            title="Сохранить проект на диск (.plc.json)"
+          >
+            <Download size={13} className="text-[#007acc]" />
+            <span>Save</span>
+          </button>
+
+          <span className="text-[#444444] mx-0.5">|</span>
+
           <button
             onClick={() => {
               fetchGeneratedCCode();
